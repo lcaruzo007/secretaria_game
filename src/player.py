@@ -10,6 +10,8 @@ except ImportError:
 
 class Player(pygame.sprite.Sprite):
 	DIRECTIONS = ("down", "left", "right", "up")
+	FALLBACK_COLOR = (70, 140, 255)
+	FALLBACK_OUTLINE = (255, 255, 255)
 
 	def __init__(self, x, y, sprite_name="player.png", scale=1.0, animation_speed=120, move_speed=220):
 		super().__init__()
@@ -21,6 +23,7 @@ class Player(pygame.sprite.Sprite):
 		self.frame_index = 0
 		self.last_update = 0
 		self.scale = scale
+		self._fallback_sheet = False
 		self.sheet = self._load_sheet(sprite_name)
 		self.frame_width, self.frame_height = self._detect_frame_size(self.sheet)
 		self.frames = self._build_frames(self.sheet)
@@ -36,7 +39,8 @@ class Player(pygame.sprite.Sprite):
 	def _load_sheet(self, sprite_name):
 		image_path = os.path.join(settings.IMAGES_DIR, sprite_name)
 		if not os.path.exists(image_path):
-			return pygame.Surface((48, 48), pygame.SRCALPHA)
+			self._fallback_sheet = True
+			return self._build_fallback_surface()
 
 		image = pygame.image.load(image_path)
 		if pygame.display.get_init() and pygame.display.get_surface() is not None:
@@ -50,6 +54,16 @@ class Player(pygame.sprite.Sprite):
 
 		return image
 
+	def _build_fallback_surface(self):
+		size = max(48, int(48 * self.scale))
+		surface = pygame.Surface((size, size), pygame.SRCALPHA)
+		center = (size // 2, size // 2)
+		radius = max(10, size // 2 - 4)
+		pygame.draw.circle(surface, self.FALLBACK_COLOR, center, radius)
+		pygame.draw.circle(surface, self.FALLBACK_OUTLINE, center, radius, 2)
+		pygame.draw.circle(surface, (190, 225, 255), (center[0] - radius // 3, center[1] - radius // 3), max(2, radius // 4))
+		return surface
+
 	def _slice_frame(self, sheet, left, top, width, height):
 		frame_rect = pygame.Rect(left, top, width, height)
 		frame = sheet.subsurface(frame_rect).copy()
@@ -58,6 +72,9 @@ class Player(pygame.sprite.Sprite):
 		return frame
 
 	def _build_frames(self, sheet):
+		if self._fallback_sheet:
+			return {direction: [sheet.copy()] for direction in self.DIRECTIONS}
+
 		if sheet.get_width() < 4 or sheet.get_height() < 4:
 			return {direction: [sheet.copy()] for direction in self.DIRECTIONS}
 
