@@ -259,7 +259,7 @@ class Game:
 		pygame.draw.circle(self.screen, settings.SECONDARY_COLOR, (settings.WIDTH-120, 100), 70)
 
 		self._draw_centered_text(settings.TITLE, self.font_title, settings.PRIMARY_DARK, 50)
-		self._draw_centered_text("Busque o cafe e entregue na Secretaria!",
+		self._draw_centered_text("Busque o café e entregue na Secretaria!",
 		                         self.font_subtitle, (120, 90, 60), 105)
 
 		cw, ch = 860, 520
@@ -282,6 +282,7 @@ class Game:
 			"ESC   - Voltar ao menu",
 			"WASD / Setas - Mover o estagiario",
 			"Dica: evite os colegas - eles te param!",
+
 		]
 		for i, cmd in enumerate(cmds):
 			s = self.font_small.render(cmd, True, settings.TEXT_COLOR)
@@ -299,7 +300,7 @@ class Game:
 		pygame.draw.rect(self.screen, (210,140,60) if hover else settings.ACCENT_COLOR, btn, border_radius=18)
 		pygame.draw.rect(self.screen, settings.PRIMARY_DARK, btn, width=2, border_radius=18)
 		self._draw_centered_text("Pressione ENTER", self.font_body, (30,15,5), btn.centery)
-
+		self._draw_centered_text("Lucas Caruzo - 2026", self.font_small, (100, 100, 100), settings.HEIGHT - 20)
 	# ── HUD ──────────────────────────────────────────────────
 
 	def _draw_hud(self):
@@ -311,11 +312,11 @@ class Game:
 		self.screen.blit(ts, (tbg.x+10, tbg.y+4))
 
 		if not self.has_coffee and not self.coffee_delivered:
-			obj, oc = "Objetivo: Pegar o cafe na Copa", (255, 230, 100)
+			obj, oc = "Objetivo: Pegar o café na Copa", (255, 230, 100)
 		elif self.has_coffee:
 			obj, oc = "Objetivo: Sair por uma das saidas", (120, 255, 120)
 		else:
-			obj, oc = "Cafe entregue! Parabens!", (100, 220, 100)
+			obj, oc = "Café entregue! Parabens!", (100, 220, 100)
 
 		os_ = self.font_small.render(obj, True, oc)
 		obg = pygame.Rect(8, 8, os_.get_width()+18, 30)
@@ -323,7 +324,7 @@ class Game:
 		self.screen.blit(os_, (obg.x+9, obg.y+4))
 
 		if self.has_coffee:
-			ic = self.font_small.render("[C] Com cafe!", True, (255, 210, 80))
+			ic = self.font_small.render("Com café!", True, (255, 210, 80))
 			ibg = pygame.Rect(settings.WIDTH-ic.get_width()-26, 8, ic.get_width()+18, 30)
 			self._draw_rounded_box(ibg, (60,35,10), (200,140,40), radius=8)
 			self.screen.blit(ic, (ibg.x+9, ibg.y+4))
@@ -393,7 +394,7 @@ class Game:
 		box = pygame.Rect(0, 0, 700, 340)
 		box.center = (settings.WIDTH//2, settings.HEIGHT//2)
 		self._draw_rounded_box(box, (20, 40, 20), (80, 200, 80), radius=20, alpha=240)
-		self._draw_centered_text("** CAFE ENTREGUE! **",
+		self._draw_centered_text("CAFÉ ENTREGUE!",
 		                         self.font_title, (100, 230, 100), settings.HEIGHT//2-100)
 		self._draw_centered_text(f"Tempo: {self._format_time(self.elapsed_ms)}",
 		                         self.font_body, (240, 240, 100), settings.HEIGHT//2-20)
