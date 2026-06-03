@@ -1,4 +1,5 @@
 import os
+import json
 import math
 import random
 
@@ -107,6 +108,52 @@ def _random_npc_position():
 	return random.randint(300, 900), random.randint(280, 500)
 
 
+def _load_collision_rects_from_map():
+	"""Carrega retangulos de colisao a partir do arquivo cenario.json."""
+	try:
+		mapa_path = os.path.join(os.path.dirname(__file__), "..", "assets", "colisoes", "cenario.json")
+		with open(mapa_path, "r", encoding="utf-8") as f:
+			mapa_data = json.load(f)
+		
+		# Dimensoes do mapa em tiles
+		map_width_tiles = mapa_data.get("w", 60)
+		map_height_tiles = mapa_data.get("h", 40)
+		
+		# Calcular tamanho de cada tile em pixels
+		tile_width = MAP_BOUNDS.width / map_width_tiles
+		tile_height = MAP_BOUNDS.height / map_height_tiles
+		
+		# Converter coordenadas de tiles para rectangulos de pixels
+		collision_rects = []
+		for collision_str in mapa_data.get("collisions", []):
+			try:
+				tile_index, tile_tipo = map(int, collision_str.split(":"))
+				
+				# Tipo 2 = porta/passagem — não bloqueia
+				if tile_tipo == 2:
+					continue
+				
+				# Converter índice para coordenadas x, y
+				x = tile_index % map_width_tiles
+				y = tile_index // map_width_tiles
+				
+				px = MAP_BOUNDS.left + x * tile_width
+				py = MAP_BOUNDS.top + y * tile_height
+				rect = pygame.Rect(px, py, tile_width, tile_height)
+				collision_rects.append(rect)
+			except (ValueError, IndexError):
+				continue
+		
+		print(f"DEBUG: {len(collision_rects)} colisoes solidas carregadas do cenario.json")
+		print(f"DEBUG: Dimensoes do mapa: {map_width_tiles}x{map_height_tiles} tiles")
+		print(f"DEBUG: Tamanho de cada tile: {tile_width:.2f}x{tile_height:.2f} pixels")
+		
+		return collision_rects
+	except Exception as e:
+		print(f"Aviso: Nao foi possivel carregar colisoes do mapa: {e}")
+		return []
+
+
 class CoffeeBottle(pygame.sprite.Sprite):
 	"""Garrafa de cafe coletavel com animacao flutuante."""
 
@@ -167,6 +214,9 @@ class Game:
 		self._paralysis_duration = 2.0
 		self._player_paralyzed   = False
 
+		# Carregar colisoes do mapa
+		self.collision_rects = _load_collision_rects_from_map()
+
 		self._reset_game_state()
 
 	# ── helpers de carregamento ──────────────────────────────
@@ -225,10 +275,48 @@ class Game:
 
 	# ── movimento livre ──────────────────────────────────────
 
+	def _check_collision(self, rect):
+		"""Verifica se um retangulo colidir com qualquer tile de colisao."""
+		for collision_rect in self.collision_rects:
+			if rect.colliderect(collision_rect):
+				return True
+		return False
+
 	def _apply_player_movement(self, dx_px, dy_px):
-		self.player.rect.centerx += int(dx_px)
-		self.player.rect.centery += int(dy_px)
-		self.player.rect.clamp_ip(MAP_BOUNDS)
+		"""Aplica movimento ao jogador com deteccao de colisao."""
+		# Testar movimento completo (diagonal)
+		new_x = self.player.rect.centerx + int(dx_px)
+		new_y = self.player.rect.centery + int(dy_px)
+		test_rect = self.player.rect.copy()
+		test_rect.centerx = new_x
+		test_rect.centery = new_y
+		test_rect.clamp_ip(MAP_BOUNDS)
+		
+		if not self._check_collision(test_rect):
+			# Se nao colidiu, aplica o movimento normalmente
+			self.player.rect.centerx = new_x
+			self.player.rect.centery = new_y
+			self.player.rect.clamp_ip(MAP_BOUNDS)
+		else:
+			# Se colidiu, tenta deslizar nos eixos separados
+			# Tenta movimento apenas em X
+			test_rect_x = self.player.rect.copy()
+			test_rect_x.centerx = new_x
+			test_rect_x.clamp_ip(MAP_BOUNDS)
+			
+			if not self._check_collision(test_rect_x):
+				self.player.rect.centerx = new_x
+				self.player.rect.clamp_ip(MAP_BOUNDS)
+			else:
+				# Tenta movimento apenas em Y
+				test_rect_y = self.player.rect.copy()
+				test_rect_y.centery = new_y
+				test_rect_y.clamp_ip(MAP_BOUNDS)
+				
+				if not self._check_collision(test_rect_y):
+					self.player.rect.centery = new_y
+					self.player.rect.clamp_ip(MAP_BOUNDS)
+				# Se ambos colidiram, nao move
 
 	# ── utilitarios de desenho ───────────────────────────────
 
