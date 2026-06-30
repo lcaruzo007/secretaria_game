@@ -1,0 +1,25 @@
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design: HR professional wearing formal office clothes, holding a clipboard and a stopwatch, friendly but strict expression. 
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design: Accountant wearing a neat button-up shirt and glasses, holding a calculator and a stack of bills, serious expression
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design: man High-level bureaucrat wearing a sharp suit and tie, holding a stamped document and a leather folder, authoritative posture. 
+
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design: Stressed IT technician wearing a black t-shirt and jeans, messy hair, holding a large mug of coffee and a laptop.
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design:Energetic PR professional wearing stylish casual clothes, holding a digital camera and a microphone.
+
+Professores:
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design:Literature teacher wearing a casual blazer and glasses, holding a thick grammar book and a red pen.
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design:Math teacher wearing a buttoned shirt with rolled-up sleeves, holding a large wooden triangle ruler and a piece of chalk. 
+
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design:History teacher wearing a tweed jacket or vintage cardigan, holding an old rolled-up scroll and a dusty book.
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design:Geography teacher wearing an explorer vest and casual pants, holding a miniature globe and a rolled-up map..
+
+2D top-down pixel art sprite sheet, 16-bit RPG style, full 4-directional walk cycle (rows for facing up, facing down, facing left, facing right), solid green background, character design:: Science teacher wearing a white lab coat and safety goggles, holding a glowing green glass beaker.
+
+
+Prof. EF (Educação Física): Physical education teacher wearing a sports tracksuit, a sweatband on the head, sneakers, and a whistle around the neck.

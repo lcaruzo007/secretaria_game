@@ -22,7 +22,7 @@ class HUD:
 		self.layout_nome = ""
 		self.fonte_grande = pygame.font.SysFont("Consolas", 28, bold=True)
 		self.fonte_media = pygame.font.SysFont("Arial", 15)
-		self.fonte_pequena = pygame.font.SysFont("Arial", 13)
+		self.fonte_pequena = pygame.font.SysFont("Comi", 13)
 
 	def iniciar_cronometro(self):
 		self.tempo_inicio = pygame.time.get_ticks()

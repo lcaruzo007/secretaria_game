@@ -9,10 +9,16 @@ try:
 	from src import settings
 	from src.player import Player
 	from src.npc import NPC
+	from src.hud import HUD
+	from src.coffee_trail import CoffeeTrail
 except ImportError:
 	import settings
 	from player import Player
 	from npc import NPC
+	from hud import HUD
+	from coffee_trail import CoffeeTrail
+ 
+ 
 
 
 # ── Dimensões originais do mapa ─────────────────────────────────
@@ -76,11 +82,6 @@ SECRETARIA_ZONE      = _tile_rect_screen(40, 24, 15, 12)
 # Saída principal: gap no topo - cols 28-31, rows 0-4
 SAIDA_PRINCIPAL_ZONE = _tile_rect_screen(28,  0,  4,  5)
 
-# Saída inferior: gap no fundo - cols 9-13, rows 36-39
-SAIDA_INFERIOR_ZONE  = _tile_rect_screen(9,  36,  5,  4)
-
-# Saída lateral direita: gap no lado direito - col 55, rows 19-22
-SAIDA_LATERAL_ZONE   = _tile_rect_screen(55, 19,  5,  4)
 
 # ── Spawn do player: corredor interno ao lado da entrada (col 30, row 7) ──
 # Escolhido porque é logo abaixo do gap da entrada principal (cols 28-31)
@@ -143,8 +144,76 @@ NPC_DATA = [
 			"Tem materia sobre o IF no jornal hoje!",
 			"Manda um resumo das atividades do mes!",
 		],
+	}
+	# ── Professores de matérias básicas ──────────────────────────────
+	{
+		"nome": "Prof.PT",
+		"frases": [
+			"Crase! Quantas vezes vou ter que explicar?",
+			"Sua redacao tem paragrafos sem coesao!",
+			"Voce leu o texto que passei na semana passada?",
+			"Interpretacao de texto nao e adivinhar o que o autor quis dizer!",
+			"Entrega da redacao e amanha sem falta!",
+			"Concordancia verbal incorreta — refaz essa frase!",
+		],
+	},
+	{
+		"nome": "Prof.MT",
+		"frases": [
+			"Voce sabe fatorar esse polinomio?",
+			"A prova de funcoes e na proxima semana!",
+			"Lista de exercicios 4 ainda nao foi entregue!",
+			"Me explica como voce chegou nesse resultado!",
+			"Calculadora nao resolve se voce nao sabe o metodo!",
+			"Geometria analitica cai no ENEM — presta atencao!",
+		],
+	},
+	{
+		"nome": "Prof.HT",
+		"frases": [
+			"Qual foi a causa da Primeira Guerra Mundial?",
+			"O seminario de historia contemporanea e sexta!",
+			"Voce confundiu Primeira com Segunda Guerra de novo!",
+			"Linha do tempo entregue ate quinta ou zero!",
+			"Historia nao e so data, e contexto — entende?",
+			"Voce assistiu ao documentario que indiquei?",
+		],
+	},
+	{
+		"nome": "Prof.GEO",
+		"frases": [
+			"Onde fica o Tropico de Capricornio? Me aponta no mapa!",
+			"Trabalho sobre biomas e para a proxima aula!",
+			"Voce sabe diferenciar clima de tempo atmosferico?",
+			"Geopolitica cai no vestibular — nao negligencie!",
+			"Mapa tematico entregue ate sexta ou desconto na nota!",
+			"O aquecimento global nao e opiniao, e ciencia!",
+		],
+	},
+	{
+		"nome": "Prof.CIE",
+		"frases": [
+			"Voce sabe a diferenca entre celula animal e vegetal?",
+			"Relatorio do experimento ainda esta pendente!",
+			"Prova de quimica organica e semana que vem!",
+			"Como funciona a fotossintese? Me explica agora!",
+			"O laboratorio precisa de limpeza — escala e sua!",
+			"Tabela periodica voce tem que saber de cabeca!",
+		],
+	},
+ {
+		"nome": "Prof.EF",
+		"frases": [
+			"Esqueceu a roupa de ginastica de novo?",
+			"Faltou na aula pratica ontem!",
+			"Avaliacao fisica e semana que vem!",
+			"Voce vai participar dos JIFs?",
+			"Atestado medico vencido nao vale mais!",
+			"Hidratacao e fundamental — cade a garrafinha?",
+		],
 	},
 ]
+
 
 
 # ── Carregamento do mapa ─────────────────────────────────────────
@@ -275,18 +344,23 @@ class Game:
 		self.font_subtitle = pygame.font.SysFont("Comic Sans MS", 28)
 		self.font_body     = pygame.font.SysFont("Comic Sans MS", 24)
 		self.font_small    = pygame.font.SysFont("Comic Sans MS", 20)
-		self.font_hud      = pygame.font.SysFont("Comic Sans MS", 22, bold=True)
 		self.font_dialogue = pygame.font.SysFont("Comic Sans MS", 21)
+
+		self.hud = HUD()
 
 		self.logo       = self._load_logo()
 		self.background = self._load_background()
 		self.best_time_ms = 0
-
+		self.coffee_trail = CoffeeTrail(scale=MAP_SCALE)
 		self._npc_dialogue_timer = 0.0
 		self._npc_dialogue_text  = ""
 		self._npc_dialogue_name  = ""
 		self._paralysis_duration = 2.0
 		self._player_paralyzed   = False
+		self._menu_btn_rect      = pygame.Rect(0, 0, 0, 0)
+		self._menu_quit_btn_rect = pygame.Rect(0, 0, 0, 0)
+		self._victory_quit_btn_rect = pygame.Rect(0, 0, 0, 0)
+  		
 
 		# Mapa e colisões
 		self.map_data        = _load_map_data()
@@ -360,14 +434,14 @@ class Game:
 		self.coffee_bottle = CoffeeBottle(coffee_x, coffee_y)
 		print(f"DEBUG: Café spawnou em ({coffee_x}, {coffee_y})")
 
-		self.timer_running    = True
-		self.timer_start      = pygame.time.get_ticks()
-		self.elapsed_ms       = 0
 		self.has_coffee       = False
 		self.coffee_delivered = False
+		
+		# HUD — reinicia cronômetro e status
+		self.hud.iniciar_cronometro()
+		self.hud.definir_status("Objetivo: Pegar o café na Copa!")
 
 		# ── NPCs em tiles livres dentro do prédio ──
-		# Excluímos a zona de spawn do player para não aparecer em cima
 		player_zone = pygame.Rect(
 			_PLAYER_SPAWN[0] - int(60 * MAP_SCALE),
 			_PLAYER_SPAWN[1] - int(60 * MAP_SCALE),
@@ -391,7 +465,7 @@ class Game:
 		self._npc_dialogue_text  = ""
 		self._npc_dialogue_name  = ""
 		self._player_paralyzed   = False
-
+		self.coffee_trail.clear() 
 	# ── colisão ─────────────────────────────────────────────
 
 	def _check_collision(self, rect):
@@ -483,46 +557,38 @@ class Game:
 
 		if self.best_time_ms:
 			self._draw_centered_text(
-				f"Melhor tempo: {self._format_time(self.best_time_ms)}",
-				self.font_small, (80, 140, 60), card.bottom - 85
+				f"Melhor tempo: {self.hud.ms_para_tempo(self.best_time_ms)}",
+				self.font_small, (80, 140, 60), card.bottom - 95
 			)
 
-		btn   = pygame.Rect(0, 0, 260, 58)
-		btn.center = (card.centerx, card.bottom - 50)
-		hover = btn.collidepoint(pygame.mouse.get_pos())
-		pygame.draw.rect(self.screen, (210, 140, 60) if hover else settings.ACCENT_COLOR, btn, border_radius=18)
-		pygame.draw.rect(self.screen, settings.PRIMARY_DARK, btn, width=2, border_radius=18)
-		self._draw_centered_text("Pressione ENTER", self.font_body, (30, 15, 5), btn.centery)
-		self._draw_centered_text("Lucas Caruzo - 2026", self.font_small, (100, 100, 100), settings.HEIGHT - 20)
+		# Botão Jogar
+		btn_play = pygame.Rect(0, 0, 240, 52)
+		btn_play.center = (card.centerx - 135, card.bottom - 42)
+		self._menu_btn_rect = btn_play
+		hover_play = btn_play.collidepoint(pygame.mouse.get_pos())
+		pygame.draw.rect(self.screen, (210, 140, 60) if hover_play else settings.ACCENT_COLOR, btn_play, border_radius=18)
+		pygame.draw.rect(self.screen, settings.PRIMARY_DARK, btn_play, width=2, border_radius=18)
+		s = self.font_body.render("Jogar (ENTER)", True, (30, 15, 5))
+		self.screen.blit(s, s.get_rect(center=btn_play.center))
 
+		# Botão Sair
+		btn_quit = pygame.Rect(0, 0, 190, 52)
+		btn_quit.center = (card.centerx + 125, card.bottom - 42)
+		self._menu_quit_btn_rect = btn_quit
+		hover_quit = btn_quit.collidepoint(pygame.mouse.get_pos())
+		pygame.draw.rect(self.screen, (180, 60, 60) if hover_quit else (140, 40, 40), btn_quit, border_radius=18)
+		pygame.draw.rect(self.screen, (220, 100, 100), btn_quit, width=2, border_radius=18)
+		s = self.font_body.render("Sair (ESC)", True, (255, 220, 220))
+		self.screen.blit(s, s.get_rect(center=btn_quit.center))
+
+		self._draw_centered_text("Lucas Caruzo - 2026", self.font_small, (100, 100, 100), settings.HEIGHT - 20)
 	# ── HUD ─────────────────────────────────────────────────
 
 	def _draw_hud(self):
-		displayed_ms = (pygame.time.get_ticks() - self.timer_start) if self.timer_running else self.elapsed_ms
-		timer_text   = f"[T] {self._format_time(displayed_ms)}" if (self.timer_running or displayed_ms) else "[T] --.-s"
-		ts  = self.font_hud.render(timer_text, True, (255, 220, 60) if self.timer_running else (200, 200, 200))
-		tbg = pygame.Rect(settings.WIDTH // 2 - ts.get_width() // 2 - 10, 8, ts.get_width() + 20, 36)
-		self._draw_rounded_box(tbg, (20, 20, 20), radius=10)
-		self.screen.blit(ts, (tbg.x + 10, tbg.y + 4))
+		self.hud.atualizar()
+		self.hud.desenhar(self.screen)
 
-		if not self.has_coffee and not self.coffee_delivered:
-			obj, oc = "Objetivo: Pegar o café na Copa (canto inferior esquerdo)", (255, 230, 100)
-		elif self.has_coffee:
-			obj, oc = "Objetivo: Sair por uma das saídas do prédio!", (120, 255, 120)
-		else:
-			obj, oc = "Café entregue! Parabéns!", (100, 220, 100)
-
-		os_ = self.font_small.render(obj, True, oc)
-		obg = pygame.Rect(8, 8, os_.get_width() + 18, 30)
-		self._draw_rounded_box(obg, (20, 20, 20), radius=8)
-		self.screen.blit(os_, (obg.x + 9, obg.y + 4))
-
-		if self.has_coffee:
-			ic  = self.font_small.render("Com café!", True, (255, 210, 80))
-			ibg = pygame.Rect(settings.WIDTH - ic.get_width() - 26, 8, ic.get_width() + 18, 30)
-			self._draw_rounded_box(ibg, (60, 35, 10), (200, 140, 40), radius=8)
-			self.screen.blit(ic, (ibg.x + 9, ibg.y + 4))
-
+		# Barra de paralisia acima do player
 		if self._player_paralyzed and self._npc_dialogue_timer > 0:
 			ratio    = self._npc_dialogue_timer / self._paralysis_duration
 			bar_w    = 160
@@ -579,13 +645,31 @@ class Game:
 		box.center = (settings.WIDTH // 2, settings.HEIGHT // 2)
 		self._draw_rounded_box(box, (20, 40, 20), (80, 200, 80), radius=20, alpha=240)
 		self._draw_centered_text("CAFÉ ENTREGUE!", self.font_title, (100, 230, 100), settings.HEIGHT // 2 - 100)
-		self._draw_centered_text(f"Tempo: {self._format_time(self.elapsed_ms)}",
+		tempo_str = self.hud.ms_para_tempo(self.hud.ms_corridos)
+		self._draw_centered_text(f"Tempo: {tempo_str}",
 		                         self.font_body, (240, 240, 100), settings.HEIGHT // 2 - 20)
-		if self.best_time_ms and self.elapsed_ms <= self.best_time_ms:
+		if self.best_time_ms and self.hud.ms_corridos <= self.best_time_ms:
 			self._draw_centered_text("Novo recorde! [Troféu]",
 			                         self.font_body, (255, 220, 50), settings.HEIGHT // 2 + 25)
-		self._draw_centered_text("ENTER - Jogar novamente     ESC - Menu",
-		                         self.font_small, (200, 220, 200), settings.HEIGHT // 2 + 80)
+		# Botão Jogar novamente
+		btn_play = pygame.Rect(0, 0, 250, 52)
+		btn_play.center = (box.centerx - 140, box.bottom - 44)
+		self._menu_btn_rect = btn_play
+		hover_play = btn_play.collidepoint(pygame.mouse.get_pos())
+		pygame.draw.rect(self.screen, (80, 200, 80) if hover_play else (50, 160, 50), btn_play, border_radius=16)
+		pygame.draw.rect(self.screen, (180, 255, 180), btn_play, width=2, border_radius=16)
+		s = self.font_body.render("Jogar (ENTER)", True, (20, 40, 20))
+		self.screen.blit(s, s.get_rect(center=btn_play.center))
+
+		# Botão Sair (ESC → menu)
+		btn_quit = pygame.Rect(0, 0, 200, 52)
+		btn_quit.center = (box.centerx + 130, box.bottom - 44)
+		self._victory_quit_btn_rect = btn_quit
+		hover_quit = btn_quit.collidepoint(pygame.mouse.get_pos())
+		pygame.draw.rect(self.screen, (180, 60, 60) if hover_quit else (140, 40, 40), btn_quit, border_radius=16)
+		pygame.draw.rect(self.screen, (220, 100, 100), btn_quit, width=2, border_radius=16)
+		s = self.font_body.render("Sair (ESC)", True, (255, 220, 220))
+		self.screen.blit(s, s.get_rect(center=btn_quit.center))
 
 	# ── render do fundo ─────────────────────────────────────
 
@@ -614,18 +698,21 @@ class Game:
 			if self.coffee_bottle.rect.colliderect(self.player.rect):
 				self.coffee_bottle.collect()
 				self.has_coffee = True
+				self.hud.definir_status("Objetivo: Sair por uma das saídas do prédio!")
+				self.hud.definir_mensagem("Café pego! Corre pra saída!", duracao_ms=2000)
 
 	def _handle_delivery(self):
 		if self.has_coffee and not self.coffee_delivered:
-			zones = (SAIDA_PRINCIPAL_ZONE, SAIDA_LATERAL_ZONE, SAIDA_INFERIOR_ZONE)
-			if any(z.colliderect(self.player.rect) for z in zones):
+			if SAIDA_PRINCIPAL_ZONE.colliderect(self.player.rect):
 				self.coffee_delivered = True
-				self.has_coffee       = False
-				if self.timer_running:
-					self.elapsed_ms   += pygame.time.get_ticks() - self.timer_start
-					self.timer_running = False
-				if self.elapsed_ms > 0 and (self.best_time_ms == 0 or self.elapsed_ms < self.best_time_ms):
-					self.best_time_ms = self.elapsed_ms
+				self.has_coffee = False
+				self.hud.parar_cronometro()
+				self.hud.definir_status("Café entregue! Parabéns!")
+
+				elapsed = self.hud.ms_corridos
+				if elapsed > 0 and (self.best_time_ms == 0 or elapsed < self.best_time_ms):
+					self.best_time_ms = elapsed
+
 				self.state = "victory"
 
 	def _handle_npc_intercept(self):
@@ -675,8 +762,26 @@ class Game:
 			self.coffee_bottle.update(dt)
 			self.screen.blit(self.coffee_bottle.image, self.coffee_bottle.rect)
 
+		# ── rastro de café ──────────────────────────────────────────
+		if self.has_coffee:
+			keys = pygame.key.get_pressed()
+			moving = any([keys[pygame.K_LEFT], keys[pygame.K_RIGHT],
+						keys[pygame.K_UP],   keys[pygame.K_DOWN],
+						keys[pygame.K_a],    keys[pygame.K_d],
+						keys[pygame.K_w],    keys[pygame.K_s]])
+			self.coffee_trail.try_emit(
+				self.player.rect.centerx,
+				self.player.rect.centery,
+				moving and not self._player_paralyzed
+			)
+		self.coffee_trail.update(dt)
+		self.coffee_trail.draw(self.screen)
+		# ────────────────────────────────────────────────────────────
+
+
 		for npc in self.npcs:
-			npc.update(dt=dt)
+			others = [n for n in self.npcs if n is not npc]
+			npc.update(dt=dt, others=others)
 			self.screen.blit(npc.image, npc.rect)
 
 		self.player.update()
@@ -699,19 +804,44 @@ class Game:
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
 				self.running = False
+
 			elif event.type == pygame.KEYDOWN:
 				if event.key == pygame.K_ESCAPE:
-					self.state = "menu" if self.state == "game" else None
-					if self.state is None:
+					if self.state == "game":
+						self.state = "menu"
+					else:
+						# ESC no menu ou vitória → sair
 						self.running = False
-				elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+
+				elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
 					if self.state in ("menu", "victory"):
 						self._reset_game_state()
 						self.state = "game"
 
+			elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+				pos = event.pos
+
+				if self.state == "menu":
+					# Botão Jogar
+					if hasattr(self, "_menu_btn_rect") and self._menu_btn_rect.collidepoint(pos):
+						self._reset_game_state()
+						self.state = "game"
+					# Botão Sair
+					elif hasattr(self, "_menu_quit_btn_rect") and self._menu_quit_btn_rect.collidepoint(pos):
+						self.running = False
+
+				elif self.state == "victory":
+					# Botão Jogar novamente
+					if hasattr(self, "_menu_btn_rect") and self._menu_btn_rect.collidepoint(pos):
+						self._reset_game_state()
+						self.state = "game"
+					# Botão Sair
+					elif hasattr(self, "_victory_quit_btn_rect") and self._victory_quit_btn_rect.collidepoint(pos):
+						self.state = "menu"
+
 	def run(self):
 		while self.running:
-			dt = self.clock.tick(settings.FPS) / 1000.0
+			dt = min(self.clock.tick(settings.FPS) / 1000.0, 0.05)  # máx 50ms = 20fps mínimo
 			self.handle_events()
 			if   self.state == "menu":
 				self.draw_menu()
