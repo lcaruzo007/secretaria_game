@@ -18,8 +18,8 @@ _MAP_SCALE  = min(settings.WIDTH / _MAP_ORIG_W, settings.HEIGHT / _MAP_ORIG_H)
 _PLAYER_DIR = os.path.join(settings.ASSETS_DIR, "PLAYER")
 
 # Velocidade-base do player (px/s no espaço original) escalada para tela
-# O valor 220 era pensado para 1920×1280; na tela 1280×720 fica proporcional
-_MOVE_SPEED_DEFAULT = int(220 * _MAP_SCALE)
+# O valor 350 era pensado para 1920×1280; na tela 1280×720 fica proporcional
+_MOVE_SPEED_DEFAULT = int(270 * _MAP_SCALE)
 
 
 class Player(pygame.sprite.Sprite):
@@ -47,9 +47,9 @@ class Player(pygame.sprite.Sprite):
 		self._fallback_sheet = False
 
 		# Boost / dash (ativado apertando espaço)
-		self.boost_multiplier      = 1.8   # quão mais rápido fica durante o boost
-		self.boost_duration        = 0.35  # segundos de duração do boost
-		self.boost_cooldown        = 0.9   # segundos até poder usar de novo
+		self.boost_multiplier      = 2.0   # quão mais rápido fica durante o boost
+		self.boost_duration        = 0.25  # segundos de duração do boost
+		self.boost_cooldown        = 0.7   # segundos até poder usar de novo
 		self._boost_timer          = 0.0
 		self._boost_cooldown_timer = 0.0
 
@@ -218,3 +218,15 @@ class Player(pygame.sprite.Sprite):
 			self.frame_index = 0
 
 		self.image = frames[self.frame_index]
+
+	def change_sprite(self, new_sprite_name):
+		"""Troca a spritesheet do player durante o jogo."""
+		self.sprite_name = new_sprite_name
+		self._fallback_sheet = False # Reseta o fallback caso o arquivo exista
+		
+		# Recarrega a nova imagem e refaz o fatiamento dos frames
+		self.sheet = self._load_sheet(self.sprite_name)
+		self.frames = self._build_frames(self.sheet)
+		
+		# Atualiza a imagem atual para evitar que ele pisque ou suma
+		self.image = self.frames[self.direction][self.frame_index if self.frame_index < len(self.frames[self.direction]) else 0]

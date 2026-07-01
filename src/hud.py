@@ -22,7 +22,7 @@ class HUD:
 		self.layout_nome = ""
 		self.fonte_grande = pygame.font.SysFont("Consolas", 28, bold=True)
 		self.fonte_media = pygame.font.SysFont("Arial", 15)
-		self.fonte_pequena = pygame.font.SysFont("Comi", 13)
+		self.fonte_pequena = pygame.font.SysFont("Arial", 13)
 
 	def iniciar_cronometro(self):
 		self.tempo_inicio = pygame.time.get_ticks()
@@ -72,7 +72,7 @@ class HUD:
 
 		tempo_str = self.ms_para_tempo(self.ms_corridos)
 		cor_tempo = settings.GREEN if self.ms_corridos < 60000 else (255, 210, 90)
-		texto_tempo = self.fonte_grande.render(f"⏱ {tempo_str}", True, cor_tempo)
+		texto_tempo = self.fonte_grande.render(f"{tempo_str}", True, cor_tempo)
 		superficie.blit(texto_tempo, (settings.WIDTH // 2 - texto_tempo.get_width() // 2, 10))
 
 		status_texto = self.status_fixo or self.mensagem_temporaria

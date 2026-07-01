@@ -41,8 +41,8 @@ MAP_BOUNDS = pygame.Rect(MAP_OFS_X, MAP_OFS_Y, MAP_DISP_W, MAP_DISP_H)
 
 # ── Interior do prédio (tiles 3-55 cols, 5-35 rows) ─────────────
 # Baseado no mapa real: paredes externas em col 3 e col 55, rows 4 e 36
-_BLDG_COL_MIN, _BLDG_COL_MAX = 4,  54
-_BLDG_ROW_MIN, _BLDG_ROW_MAX = 5,  35
+_BLDG_COL_MIN, _BLDG_COL_MAX = 5,  53  # Recuamos 1 tile de cada lado
+_BLDG_ROW_MIN, _BLDG_ROW_MAX = 6,  33
 
 BUILDING_BOUNDS = pygame.Rect(
 	int(_BLDG_COL_MIN * TILE_ORIG * MAP_SCALE + MAP_OFS_X),
@@ -71,9 +71,7 @@ def _tile_rect_screen(col, row, w_tiles=1, h_tiles=1):
 	)
 
 
-# ── Zonas importantes (corrigidas com base no mapa real) ─────────
-# Copa/cozinha: canto inferior esquerdo do prédio (cols 4-17, rows 26-35)
-COPA_ZONE            = _tile_rect_screen(4,  26, 13, 10)
+
 
 # Secretaria: canto inferior direito (cols 40-55, rows 24-35)
 SECRETARIA_ZONE      = _tile_rect_screen(40, 24, 15, 12)
@@ -153,7 +151,7 @@ NPC_DATA = [
 	# ── Professores de matérias básicas ──────────────────────────────
 	{
 		"nome": "Prof.PT",
-		"pasta": "PROFESSORRA_PORTUGUES",
+		"pasta": "PROFESSOR_PORTUGUES",
 		"frases": [
 			"Crase! Quantas vezes vou ter que explicar?",
 			"Sua redacao tem paragrafos sem coesao!",
@@ -369,7 +367,7 @@ class Game:
 
 		self.logo       = self._load_logo()
 		self.background = self._load_background()
-		self.best_time_ms = 0
+		self.best_time_ms = self._carregar_recorde() # <--- Agora ele puxa do TXT!
 		self.coffee_trail = CoffeeTrail(scale=MAP_SCALE)
 		self._npc_dialogue_timer = 0.0
 		self._npc_dialogue_text  = ""
@@ -379,6 +377,18 @@ class Game:
 		self._menu_btn_rect      = pygame.Rect(0, 0, 0, 0)
 		self._menu_quit_btn_rect = pygame.Rect(0, 0, 0, 0)
 		self._victory_quit_btn_rect = pygame.Rect(0, 0, 0, 0)
+
+		# ── Áudios do Jogo ──
+		# Defina os caminhos dos arquivos (crie uma pasta 'audio' dentro de 'assets')
+		self.bg_music_path = os.path.join(settings.ASSETS_DIR, "audio", "fundo.mp3")
+		
+		# Carrega o efeito sonoro da garrafa de café
+		sfx_path = os.path.join(settings.ASSETS_DIR, "audio", "pegar_cafe.mp3")
+		try:
+			self.sfx_pickup = pygame.mixer.Sound(sfx_path)
+		except Exception as e:
+			print(f"Aviso: Efeito sonoro não encontrado: {e}")
+			self.sfx_pickup = None
   		
 
 		# Mapa e colisões
@@ -395,6 +405,26 @@ class Game:
 
 		self._reset_game_state()
 
+
+	def _carregar_recorde(self):
+			"""Lê o melhor tempo salvo no arquivo record.txt."""
+			caminho_arquivo = os.path.join(os.path.dirname(__file__), "record.txt")
+			try:
+				if os.path.exists(caminho_arquivo):
+					with open(caminho_arquivo, "r", encoding="utf-8") as f:
+						return int(f.read().strip())
+			except Exception as e:
+				print(f"Aviso: Erro ao ler record.txt: {e}")
+			return 0  # Se o arquivo não existir ou der erro, o recorde é 0
+
+	def _salvar_recorde(self, tempo_ms):
+			"""Salva o novo melhor tempo no arquivo record.txt."""
+			caminho_arquivo = os.path.join(os.path.dirname(__file__), "record.txt")
+			try:
+				with open(caminho_arquivo, "w", encoding="utf-8") as f:
+					f.write(str(tempo_ms))
+			except Exception as e:
+				print(f"Aviso: Erro ao salvar record.txt: {e}")
 	# ── carregamento ────────────────────────────────────────
 
 	def _load_logo(self):
@@ -444,57 +474,75 @@ class Game:
 		return random.choice(pool) if pool else (BUILDING_BOUNDS.centerx, BUILDING_BOUNDS.centery)
 
 	def _reset_game_state(self):
-		# Player aparece logo abaixo da entrada principal
-		self.player = Player(
-			_PLAYER_SPAWN[0], _PLAYER_SPAWN[1],
-			sprite_name="player.png", scale=1.0, diameter_px=48
-		)
+			# Player aparece logo abaixo da entrada principal
+			self.player = Player(
+				_PLAYER_SPAWN[0], _PLAYER_SPAWN[1],
+				sprite_name="player.png", scale=1.0, diameter_px=48
+			)
 
-		# ── Café spawna em tile livre aleatório do prédio, longe do player ──
-		player_zone = pygame.Rect(
-			_PLAYER_SPAWN[0] - int(120 * MAP_SCALE),
-			_PLAYER_SPAWN[1] - int(120 * MAP_SCALE),
-			int(240 * MAP_SCALE), int(240 * MAP_SCALE),
-		)
-		coffee_x, coffee_y = self._pick_free_pos(exclude_rect=player_zone)
-		self.coffee_bottle = CoffeeBottle(coffee_x, coffee_y)
-		print(f"DEBUG: Café spawnou em ({coffee_x}, {coffee_y})")
+			# ── Café spawna em qualquer lugar livre, mas longe do player ──
+			zona_segura_cafe = pygame.Rect(0, 0, int(400 * MAP_SCALE), int(400 * MAP_SCALE))
+			zona_segura_cafe.center = _PLAYER_SPAWN
+			
+			# Não passamos mais a 'zone', apenas excluímos a área do player
+			coffee_x, coffee_y = self._pick_free_pos(exclude_rect=zona_segura_cafe)
+			self.coffee_bottle = CoffeeBottle(coffee_x, coffee_y)
+			print(f"DEBUG: Café spawnou aleatoriamente em ({coffee_x}, {coffee_y})")
 
-		self.has_coffee       = False
-		self.coffee_delivered = False
-		
-		# HUD — reinicia cronômetro e status
-		self.hud.iniciar_cronometro()
-		self.hud.definir_status("Objetivo: Pegar o café na Copa!")
+			self.has_coffee       = False
+			self.coffee_delivered = False
+			
+			# HUD — reinicia cronômetro e status (mudei o texto já que não é mais na Copa)
+			self.hud.iniciar_cronometro()
+			self.hud.definir_status("Objetivo: Encontrar o café pelo prédio!")
 
-		# ── NPCs em tiles livres dentro do prédio ──
-		player_zone = pygame.Rect(
-			_PLAYER_SPAWN[0] - int(60 * MAP_SCALE),
-			_PLAYER_SPAWN[1] - int(60 * MAP_SCALE),
-			int(120 * MAP_SCALE), int(120 * MAP_SCALE),
-		)
-		self.npcs = []
-		for data in NPC_DATA:
-			x, y  = self._pick_free_pos(exclude_rect=player_zone)
-			speed = random.uniform(60, 100) * MAP_SCALE
-			npc   = NPC(x, y,
-			            nome=data["nome"],
-			            frases=data["frases"],
-			            intercept_radius=int(80 * MAP_SCALE),
-			            patrol_speed=speed,
-			            collision_rects=self.collision_rects,
-			            building_bounds=BUILDING_BOUNDS,
-			            sprite_folder=data.get("pasta", data["nome"]),
-			            pathfinder=self.pathfinder,
-			            free_tiles=self.free_tiles)
-			self.npcs.append(npc)
+			# ── NPCs BEM longe do player e uns dos outros ──
+			zona_segura_npcs = pygame.Rect(0, 0, int(800 * MAP_SCALE), int(800 * MAP_SCALE))
+			zona_segura_npcs.center = _PLAYER_SPAWN
+			
+			self.npcs = []
+			for data in NPC_DATA:
+				# Tenta sortear uma posição até 30 vezes para achar um lugar vazio e longe de outros NPCs
+				for _ in range(30):
+					x, y = self._pick_free_pos(exclude_rect=zona_segura_npcs)
+					
+					# Checa se essa posição está muito perto de algum NPC já criado
+					perto_demais = False
+					for outro_npc in self.npcs:
+						dist = math.hypot(x - outro_npc.rect.centerx, y - outro_npc.rect.centery)
+						if dist < (160 * MAP_SCALE):  # Distância mínima de 160px entre eles
+							perto_demais = True
+							break
+					
+					if not perto_demais:
+						break # A posição é boa! Sai do loop de tentativas.
 
-		self._npc_phrase_idx     = {npc.nome: 0 for npc in self.npcs}
-		self._npc_dialogue_timer = 0.0
-		self._npc_dialogue_text  = ""
-		self._npc_dialogue_name  = ""
-		self._player_paralyzed   = False
-		self.coffee_trail.clear() 
+				speed = random.uniform(85, 130) * MAP_SCALE
+				npc   = NPC(x, y,
+							nome=data["nome"],
+							frases=data["frases"],
+							intercept_radius=int(80 * MAP_SCALE),
+							patrol_speed=speed,
+							collision_rects=self.collision_rects,
+							building_bounds=BUILDING_BOUNDS,
+							sprite_folder=data.get("pasta", data["nome"]),
+							pathfinder=self.pathfinder,
+							free_tiles=self.free_tiles)
+				self.npcs.append(npc)
+
+			self._npc_phrase_idx     = {npc.nome: 0 for npc in self.npcs}
+			self._npc_dialogue_timer = 0.0
+			self._npc_dialogue_text  = ""
+			self._npc_dialogue_name  = ""
+			self._player_paralyzed   = False
+			self.coffee_trail.clear()
+			
+			# ── Tocar música de fundo ──
+			try:
+				pygame.mixer.music.load(self.bg_music_path)
+				pygame.mixer.music.play(-1) # O -1 faz a música tocar em loop infinito
+			except Exception as e:
+				print("Aviso: Música de fundo não encontrada ou erro ao tocar.")
 	# ── colisão ─────────────────────────────────────────────
 
 	def _check_collision(self, rect):
@@ -576,9 +624,12 @@ class Game:
 		self._draw_centered_text("Busque o café na Copa e saia do prédio!",
 		                         self.font_subtitle, (120, 90, 60), 105)
 
-		cw, ch = 860, 520
+		cw, ch = 860, 560
 		card   = pygame.Rect(0, 0, cw, ch)
-		card.center = (settings.WIDTH // 2, settings.HEIGHT // 2 + 26)
+		card.centerx = settings.WIDTH // 2
+		# Topo fixo (igual ao layout antigo) — só cresce pra baixo, pra não
+		# encostar no subtítulo lá em cima.
+		card.top = (settings.HEIGHT // 2 + 26) - 260
 		sh = pygame.Surface((cw + 20, ch + 20), pygame.SRCALPHA)
 		pygame.draw.rect(sh, (0, 0, 0, 40), sh.get_rect(), border_radius=32)
 		self.screen.blit(sh, sh.get_rect(topleft=(card.left + 10, card.top + 12)))
@@ -590,7 +641,6 @@ class Game:
 			lr.center = (card.centerx, card.top + 150 + off)
 			self.screen.blit(self.logo, lr)
 
-		self._draw_centered_text("Comandos", self.font_body, settings.PRIMARY_DARK, card.top + 275)
 		cmds = [
 			"ENTER - Iniciar jogo",
 			"ESC   - Voltar ao menu",
@@ -599,17 +649,32 @@ class Game:
 		]
 		for i, cmd in enumerate(cmds):
 			s = self.font_small.render(cmd, True, settings.TEXT_COLOR)
-			self.screen.blit(s, s.get_rect(center=(card.centerx, card.top + 315 + i * 34)))
+			self.screen.blit(s, s.get_rect(center=(card.centerx, card.top + 295 + i * 28)))
 
 		if self.best_time_ms:
-			self._draw_centered_text(
-				f"Melhor tempo: {self.hud.ms_para_tempo(self.best_time_ms)}",
-				self.font_small, (80, 140, 60), card.bottom - 95
-			)
+				tempo_str = self.hud.ms_para_tempo(self.best_time_ms)
+				texto_recorde = f"Melhor tempo: {tempo_str}"
+
+				# Renderiza o texto usando a fonte body (um pouquinho maior) e cor clara
+				surf_texto = self.font_body.render(texto_recorde, True, (255, 235, 180))
+				
+				# Ancorado a partir do topo do card, com folga garantida abaixo
+				# da lista de comandos (que agora termina em card.top + 379).
+				rect_texto = surf_texto.get_rect(center=(card.centerx, card.top + 440))
+				
+				# Cria um retângulo de fundo baseado no tamanho do texto, dando uma "gordurinha"
+				caixa_bg = rect_texto.inflate(40, 12) 
+				
+				# Desenha o fundo marrom escuro (combinando com o café) e uma borda dourada
+				pygame.draw.rect(self.screen, (60, 30, 15), caixa_bg, border_radius=12)
+				pygame.draw.rect(self.screen, (200, 150, 50), caixa_bg, width=2, border_radius=12)
+				
+				# Desenha o texto por cima do fundo
+				self.screen.blit(surf_texto, rect_texto)
 
 		# Botão Jogar
 		btn_play = pygame.Rect(0, 0, 240, 52)
-		btn_play.center = (card.centerx - 135, card.bottom - 42)
+		btn_play.center = (card.centerx - 135, card.top + 510)
 		self._menu_btn_rect = btn_play
 		hover_play = btn_play.collidepoint(pygame.mouse.get_pos())
 		pygame.draw.rect(self.screen, (210, 140, 60) if hover_play else settings.ACCENT_COLOR, btn_play, border_radius=18)
@@ -619,7 +684,7 @@ class Game:
 
 		# Botão Sair
 		btn_quit = pygame.Rect(0, 0, 190, 52)
-		btn_quit.center = (card.centerx + 125, card.bottom - 42)
+		btn_quit.center = (card.centerx + 125, card.top + 510)
 		self._menu_quit_btn_rect = btn_quit
 		hover_quit = btn_quit.collidepoint(pygame.mouse.get_pos())
 		pygame.draw.rect(self.screen, (180, 60, 60) if hover_quit else (140, 40, 40), btn_quit, border_radius=18)
@@ -730,7 +795,7 @@ class Game:
 		self._draw_centered_text(f"Tempo: {tempo_str}",
 		                         self.font_body, (240, 240, 100), settings.HEIGHT // 2 - 20)
 		if self.best_time_ms and self.hud.ms_corridos <= self.best_time_ms:
-			self._draw_centered_text("Novo recorde! [Troféu]",
+			self._draw_centered_text("Novo recorde! : )",
 			                         self.font_body, (255, 220, 50), settings.HEIGHT // 2 + 25)
 		# Botão Jogar novamente
 		btn_play = pygame.Rect(0, 0, 250, 52)
@@ -779,8 +844,11 @@ class Game:
 			if self.coffee_bottle.rect.colliderect(self.player.rect):
 				self.coffee_bottle.collect()
 				self.has_coffee = True
-				self.hud.definir_status("Objetivo: Sair por uma das saídas do prédio!")
 				self.hud.definir_mensagem("Café pego! Corre pra saída!", duracao_ms=2000)
+				self.player.change_sprite("PLAYER_CAFE.png")
+				# 1. Toca o efeito sonoro de pegar o café
+				if self.sfx_pickup:
+					self.sfx_pickup.play()
 
 	def _handle_delivery(self):
 		if self.has_coffee and not self.coffee_delivered:
@@ -789,26 +857,36 @@ class Game:
 				self.has_coffee = False
 				self.hud.parar_cronometro()
 				self.hud.definir_status("Café entregue! Parabéns!")
+				# Para a música de tensão ao vencer
+				pygame.mixer.music.stop()
 
 				elapsed = self.hud.ms_corridos
+				# Se for a primeira vez jogando OU se bateu o recorde atual
 				if elapsed > 0 and (self.best_time_ms == 0 or elapsed < self.best_time_ms):
 					self.best_time_ms = elapsed
+					self._salvar_recorde(elapsed) # <--- Salva o novo recorde no TXT!
 
 				self.state = "victory"
 
 	def _handle_npc_intercept(self):
 		if self._player_paralyzed:
 			return
+		triggered = False
 		for npc in self.npcs:
 			if npc.intercepts(self.player.rect):
-				idx = self._npc_phrase_idx[npc.nome]
-				self._npc_dialogue_text  = npc.get_phrase(idx)
-				self._npc_dialogue_name  = npc.nome
-				self._npc_dialogue_timer = self._paralysis_duration
-				self._player_paralyzed   = True
-				self._npc_phrase_idx[npc.nome] = idx + 1
+				if not triggered:
+					idx = self._npc_phrase_idx[npc.nome]
+					self._npc_dialogue_text  = npc.get_phrase(idx)
+					self._npc_dialogue_name  = npc.nome
+					self._npc_dialogue_timer = self._paralysis_duration
+					self._player_paralyzed   = True
+					self._npc_phrase_idx[npc.nome] = idx + 1
+					triggered = True
+				# Todo NPC que está encostando no player agora entra em
+				# cooldown, não só o que "ganhou" o diálogo — se não, quando
+				# tem vários grudados, o player toma delay de um atrás do
+				# outro assim que a paralisia atual termina.
 				npc.cooldown = 3.0
-				break
 
 	def _move_player(self, dt):
 		if self._player_paralyzed:

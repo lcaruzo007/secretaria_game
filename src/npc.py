@@ -1,8 +1,8 @@
 import os
 import random
 import math
-
 import pygame
+
 
 try:
 	from src import settings
@@ -118,11 +118,45 @@ class GridPath:
 _DIRECTIONS = ("down", "left", "right", "up")  # linha 1=down, 2=left, 3=right, 4=up
 
 
+def _load_png(path):
+	"""Carrega um PNG do disco, convertendo pra alpha quando possível."""
+	img = pygame.image.load(path)
+	if pygame.display.get_init() and pygame.display.get_surface() is not None:
+		img = img.convert_alpha()
+	return img
+
+
+def _find_named_sprite(npc_dir, png_files):
+	"""
+	Procura, dentro da pasta do NPC, um arquivo PNG cujo nome (sem extensão)
+	seja igual ao nome da própria pasta — ex: assets/npcs/ASCOM/ASCOM.png.
+
+	Quando esse arquivo existe, ele é a ÚNICA imagem usada como sprite do
+	NPC: qualquer outro PNG na pasta (rowX_colY.png, sobras de recortes
+	antigos, variações, etc.) é ignorado. Retorna o Surface carregado ou
+	None se não existir um arquivo com esse nome.
+	"""
+	folder_name = os.path.basename(npc_dir)
+	match = next(
+		(f for f in png_files if os.path.splitext(f)[0].lower() == folder_name.lower()),
+		None
+	)
+	if match is None:
+		return None
+	return _load_png(os.path.join(npc_dir, match))
+
+
 def _load_npc_frames_raw(nome):
 	"""
-	Carrega os frames de animação direto dos arquivos rowX_colY.png, SEM
-	montar uma spritesheet composta e re-fatiar (isso causava distorção:
-	depois de escalar, a largura nem sempre era divisível pelo nº de colunas).
+	Carrega os frames de animação do NPC.
+
+	Prioridade:
+	  1) Um PNG com o MESMO NOME da pasta (ex: ASCOM/ASCOM.png) — se existir,
+	     é usado como sprite único e estático (mesma imagem nas 4 direções),
+	     e qualquer outro arquivo na pasta é ignorado.
+	  2) Arquivos rowX_colY.png (spritesheet fatiado em grid, com animação
+	     por direção).
+
 	Tolerante a pastas incompletas: linhas/colunas faltando usam o frame
 	disponível mais próximo como substituto.
 	Retorna dict {"down": [Surface,...], "left": [...], ...} ou None.
@@ -135,6 +169,12 @@ def _load_npc_frames_raw(nome):
 	if not png_files:
 		return None
 
+	# 1) Prioridade máxima: PNG com o nome da própria pasta.
+	named_sprite = _find_named_sprite(npc_dir, png_files)
+	if named_sprite is not None:
+		return {d: [named_sprite] for d in _DIRECTIONS}
+
+	# 2) Sem arquivo "de nome próprio": tenta o formato rowX_colY.png
 	available = set()
 	max_row, max_col = 0, 0
 	for fname in png_files:
@@ -150,12 +190,6 @@ def _load_npc_frames_raw(nome):
 
 	if not available:
 		return None
-
-	def _load_png(path):
-		img = pygame.image.load(path)
-		if pygame.display.get_init() and pygame.display.get_surface() is not None:
-			img = img.convert_alpha()
-		return img
 
 	def _frame_path(row, col):
 		return os.path.join(npc_dir, f"row{row}_col{col}.png")
@@ -221,7 +255,8 @@ def _pastel_color_for(nome):
 def _load_npc_sprite(nome, diameter_px):
 	"""
 	Carrega e escala (por frame individual) os sprites de animação do NPC.
-	Primeiro tenta a pasta de frames rowX_colY.png; se não achar, tenta um
+	Primeiro tenta a pasta de frames (com prioridade pro PNG de nome igual
+	à pasta — ver `_load_npc_frames_raw`); se não achar nada, tenta um
 	único arquivo player.png (fatiado em grid 4x4 tradicional).
 	Retorna dict {"down": [Surface,...], ...} já escalado, ou None.
 	"""
@@ -320,11 +355,36 @@ class NPC(pygame.sprite.Sprite):
 		self.pathfinder = pathfinder
 		self.free_tiles = free_tiles or []
 		self.path = []  # fila de waypoints (x, y) em coordenadas de tela
-		self._stuck_accum = 0.0
+		# Stagger inicial aleatório (negativo) no timer de "travado": evita que
+		# todos os NPCs recalculem rota no mesmo frame, o que causava
+		# "ondas" sincronizadas de recálculo e piorava os engarrafamentos.
+		self._stuck_accum = -random.uniform(0.0, 0.3)
 		self._stuck_check_x = self.x
 		self._stuck_check_y = self.y
-		self.npc_separation = 32  # px mínimos entre NPCs (32 é bom balanço)
+		self._stuck_strikes = 0  # nº de travamentos consecutivos sem progresso
+		self.npc_separation = 46  # px mínimos entre NPCs (antes 32 — cede espaço mais cedo)
 		self._last_random_move = 0.0  # timestamp do último movimento aleatório
+		self._dir_waypoint = None  # último waypoint usado pra calcular direção
+
+		# Estado do "empurrão de escape" (_nudge_free): em vez de teleportar
+		# pra posição corrigida, desliza suavemente até lá em ~0.15s — assim
+		# não parece um pulo instantâneo, em nenhum FPS.
+		self._escape_remaining_x = 0.0
+		self._escape_remaining_y = 0.0
+		self._escape_timer = 0.0
+
+		# Prioridade pra desempate em deadlocks mútuos (dois NPCs se
+		# bloqueando um ao outro numa porta estreita): o de prioridade
+		# menor cede espaço, o de prioridade maior segue em frente.
+		# Assim eles não ficam os dois "cedendo" pro lado errado pra sempre.
+		self.priority = id(self)
+
+		# Largura da hitbox de colisão, limitada a menos que um tile, pra
+		# garantir que o NPC realmente cabe passando por portas de 1 tile.
+		self._hitbox_w_cap = None
+		if pathfinder is not None:
+			tile_scr = pathfinder.tile_px * pathfinder.scale
+			self._hitbox_w_cap = max(6, int(tile_scr * 0.6))
 
 		# Carrega frames de animação (usa sprite_folder se fornecido, senão o próprio nome)
 		self.frames = _load_npc_sprite(sprite_folder or nome, diameter_px)
@@ -338,7 +398,7 @@ class NPC(pygame.sprite.Sprite):
 		# Movimento e comportamento
 		self.target_x = None
 		self.target_y = None
-		self.cooldown = 0.0  # tempo em segundos antes de poder interceptar novamente
+		self.cooldown = 0.12  # tempo em segundos antes de poder interceptar novamente
 
 	def _build_fallback_sprite(self):
 		"""Cria círculo com outline como fallback."""
@@ -387,15 +447,34 @@ class NPC(pygame.sprite.Sprite):
 		self.draw_radius(surface)
 		surface.blit(self.image, self.rect)
 
-	def _pick_new_target(self):
+	def _pick_new_target(self, others=None):
 		"""Escolhe um novo alvo de patrulha e calcula a rota (BFS) até ele.
-		Tenta até 30 vezes. Se falhar, usa fallback de movimento aleatório."""
+		Tenta até 30 vezes. Se falhar, usa fallback de movimento aleatório.
+
+		Evita, quando possível, escolher um alvo perto de onde outro NPC
+		já está — sem isso, com vários NPCs sorteando alvo livremente, é
+		questão de estatística vários acabarem convergindo pro mesmo
+		cantinho e formando bando."""
 		self.path = []
+		others = others or []
+		# Raio mínimo (em px) que um alvo deve manter de outros NPCs nas
+		# primeiras tentativas de sorteio.
+		_MIN_TARGET_SEP = 140
 
 		if self.pathfinder and self.free_tiles:
 			# Tenta MUITO mais vezes para garantir que acha uma rota (30 tentativas)
-			for _ in range(30):
+			for attempt in range(30):
 				tx, ty = random.choice(self.free_tiles)
+				# Nas primeiras ~2/3 das tentativas, pula alvos colados em
+				# outro NPC. Nas últimas tentativas relaxa a exigência pra
+				# não ficar sem alvo nenhum (ex: mapa pequeno/lotado).
+				if others and attempt < 20:
+					perto_de_outro = any(
+						(tx - o.x) ** 2 + (ty - o.y) ** 2 < _MIN_TARGET_SEP ** 2
+						for o in others
+					)
+					if perto_de_outro:
+						continue
 				route = self.pathfinder.find_path((self.x, self.y), (tx, ty))
 				if route:
 					self.path = route
@@ -428,12 +507,45 @@ class NPC(pygame.sprite.Sprite):
 			)
 			self.path = [(self.target_x, self.target_y)]
 
+	def _nudge_free(self):
+		"""
+		Empurrão pequeno e aleatório pra sair de um deadlock persistente
+		(ex: vários NPCs travados mutuamente numa porta estreita, onde
+		simplesmente recalcular a rota não resolve porque o novo alvo
+		também passa pelo mesmo gargalo). Tenta algumas direções até achar
+		uma que não bata em parede/móvel; se nenhuma servir, não faz nada.
+		"""
+		for _ in range(8):
+			angle = random.uniform(0, 2 * math.pi)
+			dist = random.uniform(30, 55)  # nudge visível, mas sem parecer teleporte
+			nx = self.x + dist * math.cos(angle)
+			ny = self.y + dist * math.sin(angle)
+			if self.collision_rects:
+				w = max(6, int(self.rect.width * 0.5))
+				if self._hitbox_w_cap is not None:
+					w = min(w, self._hitbox_w_cap)
+				h = max(6, int(self.rect.height * 0.35))
+				test_rect = pygame.Rect(0, 0, w, h)
+				test_rect.midbottom = (int(nx), int(ny + self.rect.height / 2))
+				if any(test_rect.colliderect(cr) for cr in self.collision_rects):
+					continue
+			# Em vez de "self.x, self.y = nx, ny" (teleporte instantâneo),
+			# guarda a distância a percorrer e desliza até lá em update().
+			self._escape_remaining_x = nx - self.x
+			self._escape_remaining_y = ny - self.y
+			self._escape_timer = 0.15
+			return
+
 	def _check_stuck(self, dt, intending_to_move):
 		"""
 		Detecta oscilação/travamento: se o NPC deveria estar andando mas
 		mal se moveu no intervalo, descarta a rota atual para forçar recálculo.
 		Isso evita deadlocks (ex: dois NPCs travados um no caminho do outro).
 		Intervalo reduzido para 0.3s (era 0.6s) para reagir mais rápido.
+
+		Se o NPC travar várias vezes SEGUIDAS mesmo depois de recalcular rota
+		(sinal de deadlock persistente num gargalo, não só um encontro
+		passageiro), aplica um pequeno empurrão aleatório pra quebrar o ciclo.
 		"""
 		self._stuck_accum += dt
 		if self._stuck_accum < 0.3:  # Reduzido de 0.6 para 0.3
@@ -442,105 +554,165 @@ class NPC(pygame.sprite.Sprite):
 		if intending_to_move and moved < 8:  # Aumentado threshold de 4 para 8 (mais sensível)
 			self.path = []
 			self.target_x = self.target_y = None
+			self._stuck_strikes += 1
+			if self._stuck_strikes >= 3:
+				self._nudge_free()
+				self._stuck_strikes = 0
+		else:
+			self._stuck_strikes = 0
 		self._stuck_check_x, self._stuck_check_y = self.x, self.y
 		self._stuck_accum = 0.0
 
 	def update(self, dt, others=None):
-		"""
-		Atualiza posição, animação e comportamento do NPC.
-		
-		Args:
-			dt: delta time em segundos
-			others: lista de outros NPCs para evitar colisão
-		"""
-		others = others or []
-		self.cooldown = max(0, self.cooldown - dt)
+			"""
+			Atualiza posição, animação e comportamento do NPC.
+			
+			Args:
+				dt: delta time em segundos
+				others: lista de outros NPCs para evitar colisão
+			"""
+			others = others or []
+			self.cooldown = max(0, self.cooldown - dt)
 
-		# Sem rota ativa? Escolhe novo alvo e calcula caminho via BFS
-		if not self.path:
-			self._pick_new_target()
-
-		self.moving = False
-		intending_to_move = bool(self.path)
-
-		if self.path:
-			wx, wy = self.path[0]
-			dx = wx - self.x
-			dy = wy - self.y
-			dist_sq = dx * dx + dy * dy
-
-			# Chegou no waypoint atual: avança para o próximo
-			# Tolerância aumentada de 6 para 12 para evitar oscilação
-			if dist_sq < (12 ** 2):
-				self.path.pop(0)
+			# Deslizamento do empurrão de escape em andamento? Move uma fração
+			# proporcional ao tempo restante (frame-rate independente) e pula
+			# a movimentação normal de patrulha nesse frame.
+			if self._escape_timer > 0:
+				frac = min(1.0, dt / self._escape_timer)
+				step_x = self._escape_remaining_x * frac
+				step_y = self._escape_remaining_y * frac
+				self.x += step_x
+				self.y += step_y
+				self._escape_remaining_x -= step_x
+				self._escape_remaining_y -= step_y
+				self._escape_timer = max(0.0, self._escape_timer - dt)
+				self.moving = True
 			else:
-				dist = math.sqrt(dist_sq)
-				vx = (dx / dist) * self.patrol_speed
-				vy = (dy / dist) * self.patrol_speed
+				# Sem rota ativa? Escolhe novo alvo e calcula caminho via BFS
+				if not self.path:
+					self._pick_new_target(others)
 
-				new_x = self.x + vx * dt
-				new_y = self.y + vy * dt
+				self.moving = False
+			intending_to_move = bool(self.path)
 
-				# Usa sempre direção "down" para evitar piscamento
-				# (ao trocar entre left/right/up/down, a animação fica muito rápida/piscando)
-				self.direction = "down"
+			if self.path:
+				wx, wy = self.path[0]
+				dx = wx - self.x
+				dy = wy - self.y
+				dist_sq = dx * dx + dy * dy
 
-				# Separação suave entre NPCs: tenta ceder espaço em vez de ficar travado
-				blocked_by_npc = False
-				for other in others:
-					if other is self:
-						continue
-					if (other.x - new_x) ** 2 + (other.y - new_y) ** 2 < (self.npc_separation ** 2):
-						blocked_by_npc = True
-						break
+				# Chegou no waypoint atual: avança para o próximo
+				# Tolerância aumentada de 6 para 12 para evitar oscilação
+				if dist_sq < (12 ** 2):
+					self.path.pop(0)
+				else:
+					dist = math.sqrt(dist_sq)
+					vx = (dx / dist) * self.patrol_speed
+					vy = (dy / dist) * self.patrol_speed
 
-				# Checagem de segurança contra colisão do mapa (rede de proteção;
-				# o BFS já garante tiles caminháveis, isso cobre bordas de tile).
-				# Usa uma hitbox menor que o sprite inteiro (ancorada nos pés),
-				# senão o NPC trava contra parede/móvel bem antes de encostar.
-				can_move = True
-				if self.collision_rects:
+					new_x = self.x + vx * dt
+					new_y = self.y + vy * dt
+
+					# Direção calculada a partir do vetor até o waypoint ATUAL
+					if (wx, wy) != self._dir_waypoint:
+						if abs(dx) > abs(dy):
+							self.direction = "right" if dx > 0 else "left"
+						else:
+							self.direction = "down" if dy > 0 else "up"
+						self._dir_waypoint = (wx, wy)
+
+					# Separação suave entre NPCs (Lógica existente)
+					blocked_by_npc = False
+					for other in others:
+						if other is self:
+							continue
+						if (other.x - new_x) ** 2 + (other.y - new_y) ** 2 < (self.npc_separation ** 2):
+							if other.priority > self.priority:
+								blocked_by_npc = True
+								break
+
+					# Checagem de segurança contra colisão do mapa
+					can_move = True
 					w = max(6, int(self.rect.width * 0.5))
+					if self._hitbox_w_cap is not None:
+						w = min(w, self._hitbox_w_cap)
 					h = max(6, int(self.rect.height * 0.35))
-					test_rect = pygame.Rect(0, 0, w, h)
-					test_rect.midbottom = (int(new_x), int(new_y + self.rect.height / 2))
-					can_move = not any(test_rect.colliderect(cr) for cr in self.collision_rects)
+					if self.collision_rects:
+						test_rect = pygame.Rect(0, 0, w, h)
+						test_rect.midbottom = (int(new_x), int(new_y + self.rect.height / 2))
+						can_move = not any(test_rect.colliderect(cr) for cr in self.collision_rects)
 
-				# Se bloqueado por NPC vizinho mas seria OK colisão do mapa:
-				# tenta se mover um pouco na direção perpendicular ou só o que pode
-				if can_move:
-					if not blocked_by_npc:
-						self.x = new_x
-						self.y = new_y
-						self.moving = True
-					else:
-						# Bloqueado por outro NPC: tenta se mover 50% da velocidade
-						# em direção perpendicular (cede espaço mas continua andando)
-						perp_x = -vy / dist * self.patrol_speed * 0.5 * dt
-						perp_y = vx / dist * self.patrol_speed * 0.5 * dt
-						test_rect2 = pygame.Rect(0, 0, w, h)
-						test_rect2.midbottom = (int(self.x + perp_x), int(self.y + perp_y + self.rect.height / 2))
-						if not any(test_rect2.colliderect(cr) for cr in self.collision_rects):
-							self.x += perp_x
-							self.y += perp_y
+					# Aplica o movimento
+					if can_move:
+						if not blocked_by_npc:
+							self.x = new_x
+							self.y = new_y
 							self.moving = True
+						else:
+							# Bloqueado por outro NPC: tenta se mover perpendicularmente
+							perp_x = -vy / dist * self.patrol_speed * 0.5 * dt
+							perp_y = vx / dist * self.patrol_speed * 0.5 * dt
+							test_rect2 = pygame.Rect(0, 0, w, h)
+							test_rect2.midbottom = (int(self.x + perp_x), int(self.y + perp_y + self.rect.height / 2))
+							if not any(test_rect2.colliderect(cr) for cr in self.collision_rects):
+								self.x += perp_x
+								self.y += perp_y
+								self.moving = True
 
-		# Detecta e resolve travamentos (móvel no caminho, dois NPCs se
-		# bloqueando, etc.) forçando recálculo de rota
-		self._check_stuck(dt, intending_to_move)
+				# ── LÓGICA DE COLISÃO ENTRE NPCS (Evitar Sobreposição) ──
+			if others:
+				distancia_minima = 64  # antes 40 — bando formado precisa de empurrão de verdade
+				push_x, push_y = 0.0, 0.0
 
-		# Atualiza animação
-		frames = self.frames.get(self.direction, self.frames["down"])
-		if not frames:
-			frames = self.frames["down"]
+				for outro in others:
+					if outro is self:
+						continue # Ignora a colisão consigo mesmo
 
-		now = pygame.time.get_ticks()
-		if self.moving and len(frames) > 1:
-			if now - self.last_update >= self.animation_speed:
-				self.frame_index = (self.frame_index + 1) % len(frames)
-				self.last_update = now
-		else:
-			self.frame_index = 0
+					# Usamos self.x e self.y, que é onde a posição real está guardada!
+					dx = self.x - outro.x
+					dy = self.y - outro.y
 
-		self.image = frames[self.frame_index]
-		self.rect.center = (int(self.x), int(self.y))
+					dist = math.hypot(dx, dy)
+
+					if 0 < dist < distancia_minima:
+						sobreposicao = distancia_minima - dist
+						nx = dx / dist
+						ny = dy / dist
+						# Acumula a correção de TODOS os vizinhos sobrepostos antes
+						# de aplicar — se não, com vários grudados de uma vez a soma
+						# das correções "teleportava" o NPC pra longe num frame só.
+						push_x += nx * sobreposicao
+						push_y += ny * sobreposicao
+
+				if push_x or push_y:
+					# Limita a correção por segundo (não por frame), pra virar um
+					# deslizar suave mesmo com framerate variável ou muita gente
+					# sobreposta ao mesmo tempo — nunca um salto instantâneo.
+					push_len = math.hypot(push_x, push_y)
+					max_push = 180 * dt
+					if push_len > max_push:
+						escala = max_push / push_len
+						push_x *= escala
+						push_y *= escala
+					self.x += push_x
+					self.y += push_y
+
+			# Detecta e resolve travamentos
+			self._check_stuck(dt, intending_to_move)
+
+			# Atualiza animação
+			frames = self.frames.get(self.direction, self.frames["down"])
+			if not frames:
+				frames = self.frames["down"]
+
+			now = pygame.time.get_ticks()
+			if self.moving and len(frames) > 1:
+				if now - self.last_update >= self.animation_speed:
+					self.frame_index = (self.frame_index + 1) % len(frames)
+					self.last_update = now
+			else:
+				self.frame_index = 0
+
+			self.image = frames[self.frame_index]
+			# Aqui o rect finalmente recebe as posições X e Y corrigidas pela repulsão
+			self.rect.center = (int(self.x), int(self.y))
