@@ -1,7 +1,6 @@
-import math
 import os
 import random
-from collections import deque
+import math
 
 import pygame
 
@@ -12,470 +11,536 @@ except ImportError:
 
 
 # Cache de sprites de imagem já carregados, por (nome, tamanho_px) -> Surface
-_SPRITE_CACHE: dict = {}
+_SPRITE_CACHE = {}
+
+
+class GridPath:
+	"""
+	Pathfinding em grid usando BFS (busca em largura).
+	Permite que os NPCs desviem de móveis/paredes em vez de andar em
+	linha reta e travar contra o primeiro obstáculo no caminho.
+	"""
+
+	def __init__(self, solid_tiles, col_min, col_max, row_min, row_max,
+	             tile_px, map_ofs_x, map_ofs_y, map_scale):
+		self.solid = solid_tiles  # set de (col, row) sólidos
+		self.col_min, self.col_max = col_min, col_max
+		self.row_min, self.row_max = row_min, row_max
+		self.tile_px = tile_px
+		self.ofs_x, self.ofs_y = map_ofs_x, map_ofs_y
+		self.scale = map_scale
+
+	def world_to_tile(self, x, y):
+		col = int((x - self.ofs_x) / (self.tile_px * self.scale))
+		row = int((y - self.ofs_y) / (self.tile_px * self.scale))
+		return col, row
+
+	def tile_to_world(self, col, row):
+		ox = col * self.tile_px + self.tile_px // 2
+		oy = row * self.tile_px + self.tile_px // 2
+		return int(ox * self.scale + self.ofs_x), int(oy * self.scale + self.ofs_y)
+
+	def is_walkable(self, col, row):
+		if col < self.col_min or col > self.col_max or row < self.row_min or row > self.row_max:
+			return False
+		return (col, row) not in self.solid
+
+	def _nearest_walkable(self, tile, max_tiles=200):
+		"""BFS auxiliar: acha o tile caminhável mais próximo de `tile`."""
+		seen = {tile}
+		frontier = [tile]
+		while frontier:
+			nxt_frontier = []
+			for cx, cy in frontier:
+				if self.is_walkable(cx, cy):
+					return (cx, cy)
+				for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+					n = (cx + dx, cy + dy)
+					if n not in seen:
+						seen.add(n)
+						nxt_frontier.append(n)
+			frontier = nxt_frontier
+			if len(seen) > max_tiles:
+				break
+		return None
+
+	def find_path(self, start_xy, target_xy, max_nodes=4000):
+		"""Retorna lista de waypoints (x, y) em pixels de tela do start até o target, ou None."""
+		start = self.world_to_tile(*start_xy)
+		goal = self.world_to_tile(*target_xy)
+
+		if not self.is_walkable(*goal):
+			nearest = self._nearest_walkable(goal)
+			if nearest is None:
+				return None
+			goal = nearest
+
+		if start == goal:
+			return []
+
+		frontier = [start]
+		came_from = {start: None}
+		visited = 0
+		found = False
+
+		while frontier:
+			nxt_frontier = []
+			for current in frontier:
+				if current == goal:
+					found = True
+					break
+				cx, cy = current
+				for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+					n = (cx + dx, cy + dy)
+					if n in came_from or not self.is_walkable(*n):
+						continue
+					came_from[n] = current
+					nxt_frontier.append(n)
+					visited += 1
+			if found or visited > max_nodes:
+				break
+			frontier = nxt_frontier
+
+		if goal not in came_from:
+			return None
+
+		# Reconstrói o caminho de trás pra frente
+		tiles = []
+		node = goal
+		while node is not None:
+			tiles.append(node)
+			node = came_from[node]
+		tiles.reverse()
+
+		return [self.tile_to_world(c, r) for c, r in tiles[1:]]
+
+
+_DIRECTIONS = ("down", "left", "right", "up")  # linha 1=down, 2=left, 3=right, 4=up
+
+
+def _load_npc_frames_raw(nome):
+	"""
+	Carrega os frames de animação direto dos arquivos rowX_colY.png, SEM
+	montar uma spritesheet composta e re-fatiar (isso causava distorção:
+	depois de escalar, a largura nem sempre era divisível pelo nº de colunas).
+	Tolerante a pastas incompletas: linhas/colunas faltando usam o frame
+	disponível mais próximo como substituto.
+	Retorna dict {"down": [Surface,...], "left": [...], ...} ou None.
+	"""
+	npc_dir = os.path.join(settings.ASSETS_DIR, "npcs", nome.upper())
+	if not os.path.exists(npc_dir):
+		return None
+
+	png_files = [f for f in os.listdir(npc_dir) if f.endswith('.png')]
+	if not png_files:
+		return None
+
+	available = set()
+	max_row, max_col = 0, 0
+	for fname in png_files:
+		if fname.startswith('row') and '_col' in fname:
+			try:
+				parts = fname.replace('row', '').replace('_col', ' ').replace('.png', '')
+				row, col = map(int, parts.split())
+				available.add((row, col))
+				max_row = max(max_row, row)
+				max_col = max(max_col, col)
+			except:
+				pass
+
+	if not available:
+		return None
+
+	def _load_png(path):
+		img = pygame.image.load(path)
+		if pygame.display.get_init() and pygame.display.get_surface() is not None:
+			img = img.convert_alpha()
+		return img
+
+	def _frame_path(row, col):
+		return os.path.join(npc_dir, f"row{row}_col{col}.png")
+
+	rows_with_data = sorted({r for r, c in available})
+	frame_map = {}
+
+	for row in range(1, max_row + 1):
+		if row > len(_DIRECTIONS):
+			break
+		direction = _DIRECTIONS[row - 1]
+
+		# IMPORTANTE: se um frame (rowX_colY.png) estiver faltando, repetimos
+		# o último frame válido da MESMA linha/direção. Nunca pegamos frame
+		# de outra linha (outra direção) — isso era o que causava o sprite
+		# "trocando" pra outra pose no meio da animação.
+		frames = []
+		last_good = None
+		if row in rows_with_data:
+			for col in range(1, max_col + 1):
+				path = _frame_path(row, col)
+				if os.path.exists(path):
+					img = _load_png(path)
+					last_good = img
+				else:
+					img = last_good  # repete o último frame válido da própria direção
+				if img is not None:
+					frames.append(img)
+
+		frame_map[direction] = frames
+
+	# Garante que toda direção tenha ao menos 1 frame (usa outra direção como fallback)
+	any_frames = next((v for v in frame_map.values() if v), None)
+	if not any_frames:
+		return None
+	for d in _DIRECTIONS:
+		if not frame_map.get(d):
+			frame_map[d] = any_frames
+
+	return frame_map
+
+
+# Paleta de cores pastel usada no círculo de fundo dos NPCs
+_PASTEL_PALETTE = [
+	(255, 209, 220),  # rosa pastel
+	(255, 229, 180),  # pêssego pastel
+	(253, 253, 150),  # amarelo pastel
+	(197, 225, 165),  # verde pastel
+	(179, 229, 252),  # azul claro pastel
+	(197, 202, 233),  # lavanda pastel
+	(230, 190, 230),  # lilás pastel
+	(255, 204, 188),  # coral pastel
+]
+
+
+def _pastel_color_for(nome):
+	"""Escolhe uma cor pastel de forma determinística a partir do nome do NPC
+	(mesmo NPC sempre recebe a mesma cor entre execuções)."""
+	idx = sum(ord(c) for c in nome) % len(_PASTEL_PALETTE)
+	return _PASTEL_PALETTE[idx]
 
 
 def _load_npc_sprite(nome, diameter_px):
 	"""
-	Tenta carregar assets/images/npcs/<nome>.png e escalar para o diâmetro
-	desejado. Retorna None se o arquivo não existir (quem chamou deve usar
-	o fallback de bolinha).
+	Carrega e escala (por frame individual) os sprites de animação do NPC.
+	Primeiro tenta a pasta de frames rowX_colY.png; se não achar, tenta um
+	único arquivo player.png (fatiado em grid 4x4 tradicional).
+	Retorna dict {"down": [Surface,...], ...} já escalado, ou None.
 	"""
-	key = (nome, diameter_px)
-	if key in _SPRITE_CACHE:
-		return _SPRITE_CACHE[key]
+	cache_key = (nome, diameter_px)
+	if cache_key in _SPRITE_CACHE:
+		return _SPRITE_CACHE[cache_key]
 
-	path = os.path.join(settings.IMAGES_DIR, "npcs", f"{nome}.png")
-	if not os.path.exists(path):
-		_SPRITE_CACHE[key] = None
+	frame_map = _load_npc_frames_raw(nome)
+
+	# Fallback: arquivo único player.png em grid 4x4 (formato legado)
+	if frame_map is None:
+		search_dir = os.path.join(settings.ASSETS_DIR, "npcs", nome.upper())
+		sheet = None
+		for ext in [".png", ".jpg", ".jpeg"]:
+			path = os.path.join(search_dir, f"player{ext}")
+			if os.path.exists(path):
+				sheet = pygame.image.load(path)
+				if pygame.display.get_init() and pygame.display.get_surface() is not None:
+					sheet = sheet.convert_alpha()
+				break
+		if sheet is not None and sheet.get_width() % 4 == 0 and sheet.get_height() % 4 == 0:
+			fw, fh = sheet.get_width() // 4, sheet.get_height() // 4
+			frame_map = {}
+			for row_idx, direction in enumerate(_DIRECTIONS):
+				frame_map[direction] = [
+					sheet.subsurface(pygame.Rect(c * fw, row_idx * fh, fw, fh)).copy()
+					for c in range(4)
+				]
+		elif sheet is not None:
+			frame_map = {d: [sheet] for d in _DIRECTIONS}
+
+	if frame_map is None:
 		return None
 
-	try:
-		raw = pygame.image.load(path).convert_alpha()
-		scaled = pygame.transform.smoothscale(raw, (diameter_px, diameter_px))
-	except Exception as e:
-		print(f"Aviso: falha ao carregar sprite de '{nome}' ({path}): {e}")
-		scaled = None
+	# Escala cada frame individualmente para diameter_px de altura.
+	# (O círculo de alcance NÃO é desenhado aqui — ele é desenhado à parte,
+	# em NPC.draw(), pra não inflar o rect de colisão do sprite.)
+	scaled = {}
+	for direction, frames in frame_map.items():
+		scaled_frames = []
+		for img in frames:
+			scale = diameter_px / img.get_height()
+			new_w = max(1, int(img.get_width() * scale))
+			new_h = max(1, diameter_px)
+			scaled_frames.append(pygame.transform.smoothscale(img, (new_w, new_h)))
+		scaled[direction] = scaled_frames
 
-	_SPRITE_CACHE[key] = scaled
+	_SPRITE_CACHE[cache_key] = scaled
 	return scaled
 
 
-NPC_COLORS = {
-	"RH":           ((220,  80,  80), (160,  20,  20)),
-	"Financeiro":   (( 80, 150, 220), ( 20,  70, 160)),
-	"Gabinete":     ((220, 180,  50), (160, 120,  10)),
-	"TI":           (( 80, 200, 100), ( 20, 130,  50)),
-	"ASCOM":        ((200,  80, 200), (130,  20, 140)),
-	"Biblioteca":   ((100, 180, 210), ( 30, 100, 140)),
-	"Extensao":     ((240, 130,  50), (170,  70,  10)),
-	"Prof.EF":      ((100, 210,  80), ( 40, 140,  20)),
-	"Prof.PT":      ((240, 160,  80), (170,  90,  10)),
-	"Prof.MT":      ((180,  50, 180), (110,  10, 110)),
-	"Prof.HT":      ((190, 140,  60), (120,  80,  10)),
-	"Prof.GEO":     (( 40, 180, 140), ( 10, 110,  80)),
-	"Prof.CIE":     ((100, 200, 240), ( 30, 120, 160)),
-}
-
-_MAP_SCALE      = min(settings.WIDTH / 1920, settings.HEIGHT / 1280)
-_NPC_RADIUS     = max(6, int(14 * _MAP_SCALE))
-_WAYPOINT_REACH = max(14, int(28 * _MAP_SCALE))
-_TILE_SCR       = 32 * _MAP_SCALE   # tamanho de um tile em px na tela
-
-_STUCK_THRESHOLD   = 45   # frames sem mover → muda waypoint
-_OSCILLATE_WINDOW  = 90   # frames para detectar oscilação
-_OSCILLATE_THRESH  = 0.15 # se desvio padrão da posição < X*patrol_bounds, está oscilando
-
-
-# ── Pathfinding compartilhado (calculado uma vez, reutilizado por todos os NPCs) ──
-# Mapa de tiles em coordenadas de tile (col, row), construído a partir dos
-# collision_rects passados pelo game.py no espaço de tela.
-_SHARED_TILE_ADJ: dict = {}   # (col, row) -> [(col, row), ...]
-_TILE_GRID_BUILT = False
-
-
-def _build_tile_adj(collision_rects, patrol_bounds, tile_scr):
-	"""
-	Converte collision_rects (espaço de tela) para um grafo de tiles navegáveis.
-	Chamado uma vez na criação do primeiro NPC.
-	"""
-	global _SHARED_TILE_ADJ, _TILE_GRID_BUILT
-	if _TILE_GRID_BUILT:
-		return
-
-	# Inferir grade de tiles a partir do patrol_bounds e tile_scr
-	t = max(1, int(tile_scr))
-	col_min = int(patrol_bounds.left  / t)
-	col_max = int(patrol_bounds.right / t)
-	row_min = int(patrol_bounds.top   / t)
-	row_max = int(patrol_bounds.bottom / t)
-
-	# Marcar tiles bloqueados
-	blocked = set()
-	for rect in collision_rects:
-		# Todos os tiles que o rect toca
-		c0 = int(rect.left   / t)
-		c1 = int(rect.right  / t)
-		r0 = int(rect.top    / t)
-		r1 = int(rect.bottom / t)
-		for c in range(c0, c1 + 1):
-			for r in range(r0, r1 + 1):
-				blocked.add((c, r))
-
-	# Construir adjacência
-	adj = {}
-	for c in range(col_min, col_max + 1):
-		for r in range(row_min, row_max + 1):
-			if (c, r) in blocked:
-				continue
-			neighbors = []
-			for dc, dr in [(1,0),(-1,0),(0,1),(0,-1)]:
-				nb = (c + dc, r + dr)
-				if nb not in blocked and col_min <= nb[0] <= col_max and row_min <= nb[1] <= row_max:
-					neighbors.append(nb)
-			adj[(c, r)] = neighbors
-
-	_SHARED_TILE_ADJ = adj
-	_TILE_GRID_BUILT = True
-
-
-def _screen_to_tile(sx, sy, tile_scr):
-	t = max(1, int(tile_scr))
-	return (int(sx / t), int(sy / t))
-
-
-def _tile_to_screen_center(col, row, tile_scr):
-	t = max(1, int(tile_scr))
-	return (col * t + t // 2, row * t + t // 2)
-
-
-def _bfs_waypoint(start_tile, min_dist_tiles=6, max_dist_tiles=30):
-	"""
-	Escolhe um waypoint via BFS a partir de start_tile.
-	Garante que o destino é alcançável por caminho real,
-	e está entre min_dist e max_dist tiles de distância BFS.
-	"""
-	if not _SHARED_TILE_ADJ:
-		return None
-
-	visited = {start_tile: 0}
-	q = deque([start_tile])
-	candidates = []
-
-	while q:
-		u = q.popleft()
-		d = visited[u]
-		if d > max_dist_tiles:
-			break
-		if d >= min_dist_tiles:
-			candidates.append(u)
-		for v in _SHARED_TILE_ADJ.get(u, []):
-			if v not in visited:
-				visited[v] = d + 1
-				q.append(v)
-
-	if not candidates:
-		# Relaxar distância mínima
-		candidates = [t for t, d in visited.items() if d >= 3]
-	if not candidates:
-		candidates = list(visited.keys())
-
-	return random.choice(candidates) if candidates else start_tile
-
-
 class NPC(pygame.sprite.Sprite):
+	"""Personagem não-jogável (NPC) com sprite animado, movimento e diálogo."""
 
-	def __init__(self, x, y, nome, frases, sprite_name="", scale=1.0,
-	             intercept_radius=80, patrol_speed=90,
-	             collision_rects=None, building_bounds=None):
+	DIRECTIONS = ("down", "left", "right", "up")
+	FALLBACK_COLOR = (200, 100, 100)
+	FALLBACK_OUTLINE = (255, 255, 255)
+
+	def __init__(self, x, y, nome, frases, intercept_radius=80, patrol_speed=150, 
+	             collision_rects=None, building_bounds=None, diameter_px=48,
+	             sprite_folder=None, pathfinder=None, free_tiles=None):
+		"""
+		Args:
+			x, y: posição inicial em pixels de tela
+			nome: nome de exibição do NPC (ex: "RH", "Financeiro", "Prof.MT")
+			frases: lista de strings de diálogo
+			intercept_radius: distância em pixels para interceptar player
+			patrol_speed: velocidade de patrulha em px/s (default: 150, antes era 80)
+			collision_rects: lista de pygame.Rect para colisão (checagem de segurança)
+			building_bounds: pygame.Rect dos limites do prédio (fallback sem pathfinder)
+			diameter_px: tamanho do sprite em pixels
+			sprite_folder: nome real da pasta em assets/npcs/ (se diferente de `nome`)
+			pathfinder: instância de GridPath para calcular rotas via BFS
+			free_tiles: lista de (x, y) de tiles livres para escolher alvos de patrulha
+		"""
 		super().__init__()
-		self.nome             = nome
-		self.frases           = list(frases)
+		self.nome = nome
+		self.x = float(x)
+		self.y = float(y)
+		self.frases = frases
 		self.intercept_radius = intercept_radius
-		self.patrol_speed     = patrol_speed
-		self.collision_rects  = list(collision_rects) if collision_rects else []
+		self.patrol_speed = patrol_speed
+		self.collision_rects = collision_rects or []
+		self.building_bounds = building_bounds
+		self.diameter_px = diameter_px
+		self.direction = "down"
+		self.moving = False
+		self.frame_index = 0
+		self.last_update = 0
+		self.animation_speed = 80  # ms entre frames (reduzido de 100 para fluir melhor com velocidade maior)
 
-		if building_bounds is not None:
-			self.patrol_bounds = building_bounds
-		else:
-			_dw = int(1920 * _MAP_SCALE)
-			_dh = int(1280 * _MAP_SCALE)
-			self.patrol_bounds = pygame.Rect(
-				(settings.WIDTH  - _dw) // 2,
-				(settings.HEIGHT - _dh) // 2,
-				_dw, _dh,
-			)
+		# Cor pastel do círculo de alcance (fixa por NPC, baseada no nome)
+		self.circle_color = _pastel_color_for(nome)
 
-		# Construir grafo de tiles (só faz uma vez)
-		_build_tile_adj(self.collision_rects, self.patrol_bounds, _TILE_SCR)
+		# Pathfinding (BFS em grid) — evita que o NPC trave em móveis
+		self.pathfinder = pathfinder
+		self.free_tiles = free_tiles or []
+		self.path = []  # fila de waypoints (x, y) em coordenadas de tela
+		self._stuck_accum = 0.0
+		self._stuck_check_x = self.x
+		self._stuck_check_y = self.y
+		self.npc_separation = 32  # px mínimos entre NPCs (32 é bom balanço)
+		self._last_random_move = 0.0  # timestamp do último movimento aleatório
 
-		self._radius = _NPC_RADIUS
-		self.image   = self._make_ball_surface()
-		self.rect    = self.image.get_rect(center=(x, y))
-		self.rect.clamp_ip(self.patrol_bounds)
+		# Carrega frames de animação (usa sprite_folder se fornecido, senão o próprio nome)
+		self.frames = _load_npc_sprite(sprite_folder or nome, diameter_px)
+		if self.frames is None:
+			fallback = self._build_fallback_sprite()
+			self.frames = {d: [fallback] for d in self.DIRECTIONS}
 
-		self._vel_x = 0.0
-		self._vel_y = 0.0
+		self.image = self.frames[self.direction][0]
+		self.rect = self.image.get_rect(center=(int(self.x), int(self.y)))
 
-		# Caminho BFS atual (lista de tiles)
-		self._path:       list = []
-		self._path_idx:   int  = 0
-		self._waypoint         = (x, y)   # ponto de tela atual
-		self._request_new_path()
+		# Movimento e comportamento
+		self.target_x = None
+		self.target_y = None
+		self.cooldown = 0.0  # tempo em segundos antes de poder interceptar novamente
 
-		self._stuck_frames     = 0
-		self._wall_frames      = 0
-		self._wall_mode_frames = 0
-		self.cooldown          = 0.0
-
-		self._exact_x = float(x)
-		self._exact_y = float(y)
-
-		# Histórico de posição para detectar oscilação
-		self._pos_history: list = []
-
-	# ── visual ───────────────────────────────────────────────────────
-
-	def _make_ball_surface(self):
-		r    = self._radius
-		size = r * 2 + 4
-
-		sprite = _load_npc_sprite(self.nome, size)
-		if sprite is not None:
-			return sprite
-
+	def _build_fallback_sprite(self):
+		"""Cria círculo com outline como fallback."""
+		size = self.diameter_px
 		surf = pygame.Surface((size, size), pygame.SRCALPHA)
-		fill_color, border_color = NPC_COLORS.get(self.nome, ((180, 180, 180), (80, 80, 80)))
-		cx = cy = size // 2
-		pygame.draw.circle(surf, (0, 0, 0, 60),       (cx + 2, cy + 3), r)
-		pygame.draw.circle(surf, fill_color,           (cx, cy), r)
-		pygame.draw.circle(surf, border_color,         (cx, cy), r, max(1, r // 7))
-		pygame.draw.circle(surf, (255, 255, 255, 120),
-		                   (cx - max(1, r // 4), cy - max(1, r // 3)), max(2, r // 3))
-		try:
-			font = pygame.font.SysFont("Arial", max(8, int(14 * _MAP_SCALE)), bold=True)
-			txt  = font.render(self.nome[0], True, (255, 255, 255))
-			surf.blit(txt, txt.get_rect(center=(cx, cy)))
-		except Exception:
-			pass
+		center = (size // 2, size // 2)
+		radius = max(6, size // 2 - 2)
+		pygame.draw.circle(surf, self.FALLBACK_COLOR, center, radius)
+		pygame.draw.circle(surf, self.FALLBACK_OUTLINE, center, radius, max(1, radius // 8))
 		return surf
 
-	# ── pathfinding ──────────────────────────────────────────────────
-
-	def _request_new_path(self):
-		"""Calcula novo caminho BFS para um waypoint aleatório alcançável."""
-		start_tile = _screen_to_tile(self.rect.centerx, self.rect.centery, _TILE_SCR)
-
-		dest_tile  = _bfs_waypoint(start_tile, min_dist_tiles=8, max_dist_tiles=35)
-		if dest_tile is None or dest_tile == start_tile:
-			self._path     = []
-			self._path_idx = 0
-			self._waypoint = (self.rect.centerx, self.rect.centery)
-			return
-
-		# BFS para reconstruir caminho
-		path = self._bfs_path(start_tile, dest_tile)
-		if path:
-			self._path     = path
-			self._path_idx = 0
-			self._advance_waypoint()
-		else:
-			self._path     = []
-			self._path_idx = 0
-			self._waypoint = _tile_to_screen_center(*dest_tile, _TILE_SCR)
-
-		self._stuck_frames     = 0
-		self._wall_frames      = 0
-		self._wall_mode_frames = 0
-
-	def _bfs_path(self, start, end):
-		"""Retorna lista de tiles do caminho BFS de start até end."""
-		if start == end:
-			return [start]
-		prev    = {start: None}
-		q       = deque([start])
-		found   = False
-		while q:
-			u = q.popleft()
-			if u == end:
-				found = True
-				break
-			for v in _SHARED_TILE_ADJ.get(u, []):
-				if v not in prev:
-					prev[v] = u
-					q.append(v)
-		if not found:
-			return []
-		path = []
-		cur  = end
-		while cur is not None:
-			path.append(cur)
-			cur = prev[cur]
-		path.reverse()
-		return path
-
-	def _advance_waypoint(self):
-		"""Move para o próximo tile do caminho."""
-		if self._path_idx < len(self._path):
-			tile = self._path[self._path_idx]
-			self._waypoint = _tile_to_screen_center(*tile, _TILE_SCR)
-			self._path_idx += 1
-		else:
-			self._request_new_path()
-
-	def _aim_at_waypoint(self):
-		dx   = self._waypoint[0] - self.rect.centerx
-		dy   = self._waypoint[1] - self.rect.centery
-		dist = math.hypot(dx, dy) or 1
-		self._vel_x = (dx / dist) * self.patrol_speed
-		self._vel_y = (dy / dist) * self.patrol_speed
-
-	# ── colisão ──────────────────────────────────────────────────────
-
-	def _check_collision(self, rect):
-		return any(rect.colliderect(cr) for cr in self.collision_rects)
-
-	def _try_escape(self, dt):
-		"""Varre ângulos em passos de 15° para encontrar direção livre."""
-		ang = math.atan2(self._vel_y, self._vel_x)
-		for step in range(1, 13):
-			for sign in (1, -1):
-				candidate = ang + sign * step * (math.pi / 12)
-				vx = math.cos(candidate) * self.patrol_speed
-				vy = math.sin(candidate) * self.patrol_speed
-				probe = self.rect.copy()
-				probe.centerx = int(self.rect.centerx + vx * dt * 10)
-				probe.centery = int(self.rect.centery + vy * dt * 10)
-				probe.clamp_ip(self.patrol_bounds)
-				if not self._check_collision(probe):
-					self._vel_x = vx
-					self._vel_y = vy
-					self._wall_mode_frames = max(60, int(_TILE_SCR / (self.patrol_speed * dt) * 1.5))
-					return True
-		return False
-
-	def _is_oscillating(self):
-		"""
-		Detecta vai-e-vem: se o desvio padrão da posição nos últimos
-		_OSCILLATE_WINDOW frames for menor que o limiar, está preso.
-		"""
-		if len(self._pos_history) < _OSCILLATE_WINDOW:
-			return False
-		xs = [p[0] for p in self._pos_history]
-		ys = [p[1] for p in self._pos_history]
-		mean_x = sum(xs) / len(xs)
-		mean_y = sum(ys) / len(ys)
-		std_x  = math.sqrt(sum((x - mean_x)**2 for x in xs) / len(xs))
-		std_y  = math.sqrt(sum((y - mean_y)**2 for y in ys) / len(ys))
-		# Limiar: menos de 1.5 tiles de variação em ambos os eixos
-		thresh = _TILE_SCR * 1.5
-		return std_x < thresh and std_y < thresh
-
-	# ── update ───────────────────────────────────────────────────────
-
-	def update(self, dt=1/60, others=None):
-		if self.cooldown > 0:
-			self.cooldown = max(0.0, self.cooldown - dt)
-
-		# Histórico de posição (janela deslizante)
-		self._pos_history.append((self.rect.centerx, self.rect.centery))
-		if len(self._pos_history) > _OSCILLATE_WINDOW:
-			self._pos_history.pop(0)
-
-		# Detectar oscilação → pedir novo caminho imediatamente
-		if self._is_oscillating():
-			self._pos_history.clear()
-			self._request_new_path()
-
-		# Chegou no waypoint atual do caminho → avançar para o próximo tile
-		if math.hypot(self._waypoint[0] - self.rect.centerx,
-		              self._waypoint[1] - self.rect.centery) <= _WAYPOINT_REACH:
-			self._advance_waypoint()
-
-		# Steering — só recalcula fora do modo desvio de parede
-		if self._wall_mode_frames <= 0:
-			dx   = self._waypoint[0] - self.rect.centerx
-			dy   = self._waypoint[1] - self.rect.centery
-			dist = math.hypot(dx, dy) or 1
-			desired_x = (dx / dist) * self.patrol_speed
-			desired_y = (dy / dist) * self.patrol_speed
-
-			# Separação entre NPCs
-			if others:
-				sep_radius = self._radius * 10
-				for other in others:
-					odx   = self.rect.centerx - other.rect.centerx
-					ody   = self.rect.centery - other.rect.centery
-					odist = math.hypot(odx, ody) or 1
-					if 0 < odist < sep_radius:
-						force      = ((sep_radius - odist) / sep_radius) * self.patrol_speed * 2.0
-						desired_x += (odx / odist) * force
-						desired_y += (ody / odist) * force
-
-			spd = math.hypot(desired_x, desired_y) or 1
-			self._vel_x = (desired_x / spd) * self.patrol_speed
-			self._vel_y = (desired_y / spd) * self.patrol_speed
-		else:
-			self._wall_mode_frames -= 1
-
-		if math.hypot(self._vel_x, self._vel_y) < 1.0:
-			self._aim_at_waypoint()
-			self._wall_mode_frames = 0
-
-		# ── mover ────────────────────────────────────────────────────
-		new_x = self._exact_x + self._vel_x * dt
-		new_y = self._exact_y + self._vel_y * dt
-
-		test = self.rect.copy()
-		test.centerx = int(new_x)
-		test.centery = int(new_y)
-		test.clamp_ip(self.patrol_bounds)
-
-		moved = False
-
-		if not self._check_collision(test):
-			self.rect.center  = test.center
-			self._exact_x     = self.rect.centerx + (new_x - int(new_x))
-			self._exact_y     = self.rect.centery + (new_y - int(new_y))
-			moved             = True
-			self._wall_frames = 0
-		else:
-			tx = self.rect.copy()
-			tx.centerx = int(new_x)
-			tx.clamp_ip(self.patrol_bounds)
-			ty = self.rect.copy()
-			ty.centery = int(new_y)
-			ty.clamp_ip(self.patrol_bounds)
-
-			can_x = not self._check_collision(tx)
-			can_y = not self._check_collision(ty)
-
-			if can_x:
-				self.rect.centerx = tx.centerx
-				self.rect.clamp_ip(self.patrol_bounds)
-				self._exact_x = self.rect.centerx + (new_x - int(new_x))
-				moved = True
-			elif can_y:
-				self.rect.centery = ty.centery
-				self.rect.clamp_ip(self.patrol_bounds)
-				self._exact_y = self.rect.centery + (new_y - int(new_y))
-				moved = True
-
-			self._wall_frames += 1
-			if self._wall_frames >= 8:
-				if not self._try_escape(dt):
-					self._request_new_path()
-				self._wall_frames = 0
-
-		# ── stuck ────────────────────────────────────────────────────
-		if not moved:
-			self._stuck_frames += 1
-			if self._stuck_frames >= _STUCK_THRESHOLD:
-				self._request_new_path()
-				self._stuck_frames = 0
-		else:
-			self._stuck_frames = 0
-
-		self.rect.clamp_ip(self.patrol_bounds)
-
-	# ── intercept / frases ───────────────────────────────────────────
+	def get_phrase(self, phrase_index):
+		"""Retorna frase de diálogo (rotaciona)."""
+		if not self.frases:
+			return "..."
+		return self.frases[phrase_index % len(self.frases)]
 
 	def intercepts(self, player_rect):
-		dist = math.hypot(
-			self.rect.centerx - player_rect.centerx,
-			self.rect.centery - player_rect.centery,
-		)
-		return dist <= self.intercept_radius and self.cooldown <= 0
-
-	def get_phrase(self, index=0):
-		if not self.frases:
-			return ""
-		return self.frases[index % len(self.frases)]
+		"""Retorna True se o NPC está próximo do player."""
+		if self.cooldown > 0:
+			return False
+		dx = self.rect.centerx - player_rect.centerx
+		dy = self.rect.centery - player_rect.centery
+		dist_sq = dx * dx + dy * dy
+		return dist_sq < (self.intercept_radius ** 2)
 
 	def draw_radius(self, surface):
-		r = self.intercept_radius
-		s = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-		fill, _ = NPC_COLORS.get(self.nome, ((180, 180, 180), (80, 80, 80)))
-		pygame.draw.circle(s, (*fill, 22), (r, r), r)
-		pygame.draw.circle(s, (*fill, 55), (r, r), r, 1)
-		surface.blit(s, (self.rect.centerx - r, self.rect.centery - r))
+		"""Desenha o círculo pastel da área de alcance (intercept_radius),
+		preenchido e semi-transparente, com contorno."""
+		radius = self.intercept_radius
+		center = (int(self.rect.centerx), int(self.rect.centery))
+
+		circle_surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+		fill_color = (*self.circle_color, 90)  # preenchimento suave
+		pygame.draw.circle(circle_surf, fill_color, (radius, radius), radius)
+
+		outline_color = tuple(max(0, c - 45) for c in self.circle_color) + (255,)
+		pygame.draw.circle(circle_surf, outline_color, (radius, radius), radius, 2)
+
+		surface.blit(circle_surf, (center[0] - radius, center[1] - radius))
+
+	def draw(self, surface):
+		"""Desenha o NPC completo: círculo pastel da área de alcance por
+		trás, e o sprite animado por cima. Use isso no lugar de
+		`surface.blit(npc.image, npc.rect)` no loop principal do jogo."""
+		self.draw_radius(surface)
+		surface.blit(self.image, self.rect)
+
+	def _pick_new_target(self):
+		"""Escolhe um novo alvo de patrulha e calcula a rota (BFS) até ele.
+		Tenta até 30 vezes. Se falhar, usa fallback de movimento aleatório."""
+		self.path = []
+
+		if self.pathfinder and self.free_tiles:
+			# Tenta MUITO mais vezes para garantir que acha uma rota (30 tentativas)
+			for _ in range(30):
+				tx, ty = random.choice(self.free_tiles)
+				route = self.pathfinder.find_path((self.x, self.y), (tx, ty))
+				if route:
+					self.path = route
+					self.target_x, self.target_y = tx, ty
+					return
+
+			# Se AINDA não achou rota em 30 tentativas: fallback para movimento aleatório
+			# Escolhe um ponto aleatório perto do NPC (raio de 60-100 px)
+			angle = random.uniform(0, 2 * math.pi)
+			dist = random.uniform(60, 100)
+			tx = int(self.x + dist * math.cos(angle))
+			ty = int(self.y + dist * math.sin(angle))
+			# Limita ao mapa/prédio
+			if self.building_bounds:
+				tx = max(self.building_bounds.left, min(self.building_bounds.right, tx))
+				ty = max(self.building_bounds.top, min(self.building_bounds.bottom, ty))
+			self.path = [(tx, ty)]
+			self.target_x, self.target_y = tx, ty
+			return
+
+		# Fallback sem pathfinder: comportamento antigo (linha reta dentro do prédio)
+		if self.building_bounds:
+			self.target_x = random.randint(
+				int(self.building_bounds.left + 50),
+				int(self.building_bounds.right - 50)
+			)
+			self.target_y = random.randint(
+				int(self.building_bounds.top + 50),
+				int(self.building_bounds.bottom - 50)
+			)
+			self.path = [(self.target_x, self.target_y)]
+
+	def _check_stuck(self, dt, intending_to_move):
+		"""
+		Detecta oscilação/travamento: se o NPC deveria estar andando mas
+		mal se moveu no intervalo, descarta a rota atual para forçar recálculo.
+		Isso evita deadlocks (ex: dois NPCs travados um no caminho do outro).
+		Intervalo reduzido para 0.3s (era 0.6s) para reagir mais rápido.
+		"""
+		self._stuck_accum += dt
+		if self._stuck_accum < 0.3:  # Reduzido de 0.6 para 0.3
+			return
+		moved = math.hypot(self.x - self._stuck_check_x, self.y - self._stuck_check_y)
+		if intending_to_move and moved < 8:  # Aumentado threshold de 4 para 8 (mais sensível)
+			self.path = []
+			self.target_x = self.target_y = None
+		self._stuck_check_x, self._stuck_check_y = self.x, self.y
+		self._stuck_accum = 0.0
+
+	def update(self, dt, others=None):
+		"""
+		Atualiza posição, animação e comportamento do NPC.
+		
+		Args:
+			dt: delta time em segundos
+			others: lista de outros NPCs para evitar colisão
+		"""
+		others = others or []
+		self.cooldown = max(0, self.cooldown - dt)
+
+		# Sem rota ativa? Escolhe novo alvo e calcula caminho via BFS
+		if not self.path:
+			self._pick_new_target()
+
+		self.moving = False
+		intending_to_move = bool(self.path)
+
+		if self.path:
+			wx, wy = self.path[0]
+			dx = wx - self.x
+			dy = wy - self.y
+			dist_sq = dx * dx + dy * dy
+
+			# Chegou no waypoint atual: avança para o próximo
+			# Tolerância aumentada de 6 para 12 para evitar oscilação
+			if dist_sq < (12 ** 2):
+				self.path.pop(0)
+			else:
+				dist = math.sqrt(dist_sq)
+				vx = (dx / dist) * self.patrol_speed
+				vy = (dy / dist) * self.patrol_speed
+
+				new_x = self.x + vx * dt
+				new_y = self.y + vy * dt
+
+				# Usa sempre direção "down" para evitar piscamento
+				# (ao trocar entre left/right/up/down, a animação fica muito rápida/piscando)
+				self.direction = "down"
+
+				# Separação suave entre NPCs: tenta ceder espaço em vez de ficar travado
+				blocked_by_npc = False
+				for other in others:
+					if other is self:
+						continue
+					if (other.x - new_x) ** 2 + (other.y - new_y) ** 2 < (self.npc_separation ** 2):
+						blocked_by_npc = True
+						break
+
+				# Checagem de segurança contra colisão do mapa (rede de proteção;
+				# o BFS já garante tiles caminháveis, isso cobre bordas de tile).
+				# Usa uma hitbox menor que o sprite inteiro (ancorada nos pés),
+				# senão o NPC trava contra parede/móvel bem antes de encostar.
+				can_move = True
+				if self.collision_rects:
+					w = max(6, int(self.rect.width * 0.5))
+					h = max(6, int(self.rect.height * 0.35))
+					test_rect = pygame.Rect(0, 0, w, h)
+					test_rect.midbottom = (int(new_x), int(new_y + self.rect.height / 2))
+					can_move = not any(test_rect.colliderect(cr) for cr in self.collision_rects)
+
+				# Se bloqueado por NPC vizinho mas seria OK colisão do mapa:
+				# tenta se mover um pouco na direção perpendicular ou só o que pode
+				if can_move:
+					if not blocked_by_npc:
+						self.x = new_x
+						self.y = new_y
+						self.moving = True
+					else:
+						# Bloqueado por outro NPC: tenta se mover 50% da velocidade
+						# em direção perpendicular (cede espaço mas continua andando)
+						perp_x = -vy / dist * self.patrol_speed * 0.5 * dt
+						perp_y = vx / dist * self.patrol_speed * 0.5 * dt
+						test_rect2 = pygame.Rect(0, 0, w, h)
+						test_rect2.midbottom = (int(self.x + perp_x), int(self.y + perp_y + self.rect.height / 2))
+						if not any(test_rect2.colliderect(cr) for cr in self.collision_rects):
+							self.x += perp_x
+							self.y += perp_y
+							self.moving = True
+
+		# Detecta e resolve travamentos (móvel no caminho, dois NPCs se
+		# bloqueando, etc.) forçando recálculo de rota
+		self._check_stuck(dt, intending_to_move)
+
+		# Atualiza animação
+		frames = self.frames.get(self.direction, self.frames["down"])
+		if not frames:
+			frames = self.frames["down"]
+
+		now = pygame.time.get_ticks()
+		if self.moving and len(frames) > 1:
+			if now - self.last_update >= self.animation_speed:
+				self.frame_index = (self.frame_index + 1) % len(frames)
+				self.last_update = now
+		else:
+			self.frame_index = 0
+
+		self.image = frames[self.frame_index]
+		self.rect.center = (int(self.x), int(self.y))

@@ -8,13 +8,13 @@ import pygame
 try:
 	from src import settings
 	from src.player import Player
-	from src.npc import NPC
+	from src.npc import NPC, GridPath
 	from src.hud import HUD
 	from src.coffee_trail import CoffeeTrail
 except ImportError:
 	import settings
 	from player import Player
-	from npc import NPC
+	from npc import NPC, GridPath
 	from hud import HUD
 	from coffee_trail import CoffeeTrail
  
@@ -92,6 +92,7 @@ _PLAYER_SPAWN = _tile_screen(30, 7)
 NPC_DATA = [
 	{
 		"nome": "RH",
+		"pasta": "RH",
 		"frases": [
 			"Preciso falar sobre seu ponto!",
 			"Voce preencheu o formulario de ferias?",
@@ -103,6 +104,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "Financeiro",
+		"pasta": "FINANCEIRO",
 		"frases": [
 			"O orcamento do setor precisa ser revisto!",
 			"Tem uma nota fiscal pra aprovar!",
@@ -114,6 +116,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "Gabinete",
+		"pasta": "GABINETE",
 		"frases": [
 			"O diretor quer uma reuniao urgente!",
 			"Voce viu o memorando de ontem?",
@@ -125,6 +128,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "TI",
+		"pasta": "NTI",
 		"frases": [
 			"Seu computador precisa de atualizacao!",
 			"Mudamos a senha do Wi-Fi institucional.",
@@ -136,6 +140,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "ASCOM",
+		"pasta": "ASCOM",
 		"frases": [
 			"Posso tirar uma foto pra divulgacao?",
 			"Voce pode gravar um depoimento rapido?",
@@ -144,10 +149,11 @@ NPC_DATA = [
 			"Tem materia sobre o IF no jornal hoje!",
 			"Manda um resumo das atividades do mes!",
 		],
-	}
+	},
 	# ── Professores de matérias básicas ──────────────────────────────
 	{
 		"nome": "Prof.PT",
+		"pasta": "PROFESSORRA_PORTUGUES",
 		"frases": [
 			"Crase! Quantas vezes vou ter que explicar?",
 			"Sua redacao tem paragrafos sem coesao!",
@@ -159,6 +165,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "Prof.MT",
+		"pasta": "PROFESSOR_MATEMATICA",
 		"frases": [
 			"Voce sabe fatorar esse polinomio?",
 			"A prova de funcoes e na proxima semana!",
@@ -170,6 +177,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "Prof.HT",
+		"pasta": "PROFESSOR_HISTORIA",
 		"frases": [
 			"Qual foi a causa da Primeira Guerra Mundial?",
 			"O seminario de historia contemporanea e sexta!",
@@ -181,6 +189,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "Prof.GEO",
+		"pasta": "PROFESSOR_GEOGRAFIA",
 		"frases": [
 			"Onde fica o Tropico de Capricornio? Me aponta no mapa!",
 			"Trabalho sobre biomas e para a proxima aula!",
@@ -192,6 +201,7 @@ NPC_DATA = [
 	},
 	{
 		"nome": "Prof.CIE",
+		"pasta": "PROFESSOR_CIENCIAS",
 		"frases": [
 			"Voce sabe a diferenca entre celula animal e vegetal?",
 			"Relatorio do experimento ainda esta pendente!",
@@ -203,6 +213,7 @@ NPC_DATA = [
 	},
  {
 		"nome": "Prof.EF",
+		"pasta": "PROFESSOR_EDUCACAO_FISICA",
 		"frases": [
 			"Esqueceu a roupa de ginastica de novo?",
 			"Faltou na aula pratica ontem!",
@@ -267,6 +278,19 @@ def _load_collision_rects(map_data):
 		return []
 
 
+def _build_solid_tile_set(map_data):
+	"""Retorna o set de tiles (col, row) marcados como sólidos (tipo 0) no mapa."""
+	if not map_data:
+		return set()
+	mw = map_data.get("w", MAP_TILES_W)
+	solid = set()
+	for entry in map_data.get("collisions", []):
+		idx, tip = map(int, entry.split(":"))
+		if tip == 0:
+			solid.add((idx % mw, idx // mw))
+	return solid
+
+
 def _build_free_tile_list(map_data):
 	"""
 	Retorna lista de coordenadas de tela (cx, cy) para o centro de cada tile
@@ -275,12 +299,7 @@ def _build_free_tile_list(map_data):
 	"""
 	if not map_data:
 		return []
-	mw = map_data.get("w", MAP_TILES_W)
-	solid = set()
-	for entry in map_data.get("collisions", []):
-		idx, tip = map(int, entry.split(":"))
-		if tip == 0:
-			solid.add((idx % mw, idx // mw))
+	solid = _build_solid_tile_set(map_data)
 	# Só tiles sólidos (tipo 0) bloqueiam spawn — portas tipo 2 são passáveis
 
 	positions = []
@@ -366,6 +385,13 @@ class Game:
 		self.map_data        = _load_map_data()
 		self.collision_rects = _load_collision_rects(self.map_data)
 		self.free_tiles      = _build_free_tile_list(self.map_data)
+		self.pathfinder = GridPath(
+			solid_tiles=_build_solid_tile_set(self.map_data),
+			col_min=_BLDG_COL_MIN, col_max=_BLDG_COL_MAX,
+			row_min=_BLDG_ROW_MIN, row_max=_BLDG_ROW_MAX,
+			tile_px=TILE_ORIG, map_ofs_x=MAP_OFS_X, map_ofs_y=MAP_OFS_Y,
+			map_scale=MAP_SCALE,
+		)
 
 		self._reset_game_state()
 
@@ -421,7 +447,7 @@ class Game:
 		# Player aparece logo abaixo da entrada principal
 		self.player = Player(
 			_PLAYER_SPAWN[0], _PLAYER_SPAWN[1],
-			sprite_name="bola_verde.png", scale=1.0
+			sprite_name="player.png", scale=1.0, diameter_px=48
 		)
 
 		# ── Café spawna em tile livre aleatório do prédio, longe do player ──
@@ -457,7 +483,10 @@ class Game:
 			            intercept_radius=int(80 * MAP_SCALE),
 			            patrol_speed=speed,
 			            collision_rects=self.collision_rects,
-			            building_bounds=BUILDING_BOUNDS)
+			            building_bounds=BUILDING_BOUNDS,
+			            sprite_folder=data.get("pasta", data["nome"]),
+			            pathfinder=self.pathfinder,
+			            free_tiles=self.free_tiles)
 			self.npcs.append(npc)
 
 		self._npc_phrase_idx     = {npc.nome: 0 for npc in self.npcs}
@@ -471,9 +500,26 @@ class Game:
 	def _check_collision(self, rect):
 		return any(rect.colliderect(cr) for cr in self.collision_rects)
 
+	def _player_hitbox(self, rect):
+		"""
+		Hitbox de colisão menor que o sprite inteiro, ancorada nos "pés"
+		do personagem (midbottom). Usar o rect inteiro do sprite (que tem
+		espaço vazio em cima, cabelo, etc.) fazia o player parecer travar
+		longe da parede e prender em quinas de tile. Com uma hitbox menor
+		e ancorada embaixo, o movimento fica muito mais suave e natural.
+		"""
+		w = max(6, int(rect.width * 0.5))
+		h = max(6, int(rect.height * 0.35))
+		hb = pygame.Rect(0, 0, w, h)
+		hb.midbottom = rect.midbottom
+		return hb
+
 	def _apply_player_movement(self, dx_px, dy_px):
 		new_x = self.player.rect.centerx + int(dx_px)
 		new_y = self.player.rect.centery + int(dy_px)
+
+		def blocked(rect):
+			return self._check_collision(self._player_hitbox(rect))
 
 		# Clamp dentro do mapa completo (permite usar as saídas)
 		test = self.player.rect.copy()
@@ -481,7 +527,7 @@ class Game:
 		test.centery = new_y
 		test.clamp_ip(MAP_BOUNDS)
 
-		if not self._check_collision(test):
+		if not blocked(test):
 			self.player.rect.centerx = test.centerx
 			self.player.rect.centery = test.centery
 		else:
@@ -489,14 +535,14 @@ class Game:
 			tx = self.player.rect.copy()
 			tx.centerx = new_x
 			tx.clamp_ip(MAP_BOUNDS)
-			if not self._check_collision(tx):
+			if not blocked(tx):
 				self.player.rect.centerx = tx.centerx
 			else:
 				# Deslizamento Y
 				ty = self.player.rect.copy()
 				ty.centery = new_y
 				ty.clamp_ip(MAP_BOUNDS)
-				if not self._check_collision(ty):
+				if not blocked(ty):
 					self.player.rect.centery = ty.centery
 
 	# ── utilitários de desenho ───────────────────────────────
@@ -588,6 +634,8 @@ class Game:
 		self.hud.atualizar()
 		self.hud.desenhar(self.screen)
 
+		self._draw_boost_bar()
+
 		# Barra de paralisia acima do player
 		if self._player_paralyzed and self._npc_dialogue_timer > 0:
 			ratio    = self._npc_dialogue_timer / self._paralysis_duration
@@ -600,6 +648,39 @@ class Game:
 			bg_rect = pygame.Rect(bar_rect.x, bar_rect.y, bar_w, 8)
 			pygame.draw.rect(self.screen, (60, 20, 20), bg_rect,  border_radius=4)
 			pygame.draw.rect(self.screen, (220, 60, 60), bar_rect, border_radius=4)
+
+	def _draw_boost_bar(self):
+		"""Barra fixa no canto inferior esquerdo mostrando o estado do boost:
+		pronto (verde-pastel), recarregando (azul-pastel, enchendo aos poucos)
+		ou ativo no momento (dourado)."""
+		player = self.player
+		bar_w, bar_h = 180, 16
+		x = 20
+		y = settings.HEIGHT - bar_h - 30
+
+		ratio = player.boost_cooldown_ratio
+
+		bg_rect   = pygame.Rect(x, y, bar_w, bar_h)
+		fill_rect = pygame.Rect(x, y, max(0, int(bar_w * ratio)), bar_h)
+
+		if player.is_boosting:
+			fill_color = (255, 221, 148)   # dourado pastel — boost ativo agora
+			label = "BOOST!"
+		elif player.boost_ready:
+			fill_color = (168, 230, 194)   # verde pastel — pronto pra usar
+			label = "BOOST pronto (ESPAÇO)"
+		else:
+			fill_color = (168, 202, 235)   # azul pastel — recarregando
+			label = "recarregando..."
+
+		pygame.draw.rect(self.screen, (40, 24, 16), bg_rect, border_radius=7)
+		if fill_rect.width > 0:
+			pygame.draw.rect(self.screen, fill_color, fill_rect, border_radius=7)
+		pygame.draw.rect(self.screen, (255, 255, 255), bg_rect, width=2, border_radius=7)
+
+		text_color = (255, 255, 255) if (player.boost_ready or player.is_boosting) else (215, 215, 215)
+		s = self.font_small.render(label, True, text_color)
+		self.screen.blit(s, (x + 8, y - s.get_height() - 6))
 
 	# ── diálogo NPC ─────────────────────────────────────────
 
@@ -732,6 +813,7 @@ class Game:
 	def _move_player(self, dt):
 		if self._player_paralyzed:
 			return
+		self.player.update_boost(dt)
 		keys = pygame.key.get_pressed()
 		h = int(keys[pygame.K_RIGHT] or keys[pygame.K_d]) - \
 		    int(keys[pygame.K_LEFT]  or keys[pygame.K_a])
@@ -754,9 +836,6 @@ class Game:
 
 	def draw_game(self, dt):
 		self._draw_map()
-
-		for npc in self.npcs:
-			npc.draw_radius(self.screen)
 
 		if not self.coffee_bottle.collected:
 			self.coffee_bottle.update(dt)
@@ -782,7 +861,7 @@ class Game:
 		for npc in self.npcs:
 			others = [n for n in self.npcs if n is not npc]
 			npc.update(dt=dt, others=others)
-			self.screen.blit(npc.image, npc.rect)
+			npc.draw(self.screen)
 
 		self.player.update()
 		self.screen.blit(self.player.image, self.player.rect)
@@ -817,6 +896,10 @@ class Game:
 					if self.state in ("menu", "victory"):
 						self._reset_game_state()
 						self.state = "game"
+
+				elif event.key == pygame.K_SPACE:
+					if self.state == "game" and not self._player_paralyzed:
+						self.player.trigger_boost()
 
 			elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 				pos = event.pos

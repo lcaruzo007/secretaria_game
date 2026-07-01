@@ -13,9 +13,9 @@ _MAP_ORIG_W = 1920
 _MAP_ORIG_H = 1280
 _MAP_SCALE  = min(settings.WIDTH / _MAP_ORIG_W, settings.HEIGHT / _MAP_ORIG_H)
 
-# Tamanho-base do fallback (bolinha) no espaço original e escalado
-_FALLBACK_SIZE_ORIG = 48
-_FALLBACK_SIZE      = max(16, int(_FALLBACK_SIZE_ORIG * _MAP_SCALE))
+# Pasta dedicada do sprite do player (assets/PLAYER/player.png).
+# Se não achar lá, cai pra assets/images/<sprite_name> (comportamento antigo).
+_PLAYER_DIR = os.path.join(settings.ASSETS_DIR, "PLAYER")
 
 # Velocidade-base do player (px/s no espaço original) escalada para tela
 # O valor 220 era pensado para 1920×1280; na tela 1280×720 fica proporcional
@@ -28,37 +28,52 @@ class Player(pygame.sprite.Sprite):
 	FALLBACK_OUTLINE = (255, 255, 255)
 
 	def __init__(self, x, y, sprite_name="player.png", scale=1.0,
-	             animation_speed=120, move_speed=None):
+	             animation_speed=120, move_speed=None, diameter_px=48):
 		super().__init__()
 		self.sprite_name     = sprite_name
 		self.animation_speed = animation_speed
 		# Se move_speed não for passado explicitamente, usa o valor escalado
 		self.move_speed      = move_speed if move_speed is not None else _MOVE_SPEED_DEFAULT
+		self.base_move_speed = self.move_speed
 		self.direction       = "down"
 		self.moving          = False
 		self.frame_index     = 0
 		self.last_update     = 0
 		self.scale           = scale
+		# Altura-alvo do sprite em px (mesma lógica usada pros NPCs) —
+		# controla o TAMANHO do personagem, independente da resolução
+		# original do arquivo player.png
+		self.diameter_px     = diameter_px
 		self._fallback_sheet = False
 
+		# Boost / dash (ativado apertando espaço)
+		self.boost_multiplier      = 1.8   # quão mais rápido fica durante o boost
+		self.boost_duration        = 0.35  # segundos de duração do boost
+		self.boost_cooldown        = 0.9   # segundos até poder usar de novo
+		self._boost_timer          = 0.0
+		self._boost_cooldown_timer = 0.0
+
 		self.sheet = self._load_sheet(sprite_name)
-		self.frame_width, self.frame_height = self._detect_frame_size(self.sheet)
+		# frame_width/frame_height já ficam definidos dentro de _load_sheet
+		# (não redetectamos a partir do sheet escalado — ver comentário lá)
 		self.frames = self._build_frames(self.sheet)
 		self.image  = self.frames[self.direction][0]
 		self.rect   = self.image.get_rect(center=(x, y))
 
 	# ── carregamento do sprite ───────────────────────────────
 
-	def _detect_frame_size(self, sheet):
-		if sheet.get_width() % 4 == 0 and sheet.get_height() % 4 == 0:
-			return sheet.get_width() // 4, sheet.get_height() // 4
-		return sheet.get_width(), sheet.get_height()
-
 	def _load_sheet(self, sprite_name):
-		image_path = os.path.join(settings.IMAGES_DIR, sprite_name)
+		# 1ª tentativa: assets/PLAYER/<sprite_name> (pasta dedicada do player)
+		image_path = os.path.join(_PLAYER_DIR, sprite_name)
+		if not os.path.exists(image_path):
+			# 2ª tentativa: assets/images/<sprite_name> (comportamento antigo)
+			image_path = os.path.join(settings.IMAGES_DIR, sprite_name)
 		if not os.path.exists(image_path):
 			self._fallback_sheet = True
-			return self._build_fallback_surface()
+			self._is_grid_sheet  = False
+			sheet = self._build_fallback_surface()
+			self.frame_width, self.frame_height = sheet.get_width(), sheet.get_height()
+			return sheet
 
 		image = pygame.image.load(image_path)
 		if pygame.display.get_init() and pygame.display.get_surface() is not None:
@@ -66,18 +81,36 @@ class Player(pygame.sprite.Sprite):
 		else:
 			image = image.copy()
 
-		# Escala do sprite: scale explícito × MAP_SCALE para ajustar ao mapa
-		combined = self.scale * _MAP_SCALE
+		# IMPORTANTE: decide se é uma spritesheet 4x4 (4 direções x 4 frames)
+		# UMA ÚNICA VEZ, olhando pro arquivo ORIGINAL (antes de escalar).
+		# Se decidirmos isso de novo depois de escalar, arredondamentos de
+		# tamanho podem "por acidente" virar múltiplos de 4 mesmo quando o
+		# arquivo é uma imagem única — daí o jogo tenta cortar essa imagem
+		# única em 16 pedaços e mostra fatias erradas ao animar.
+		self._is_grid_sheet = (image.get_width() % 4 == 0 and image.get_height() % 4 == 0)
+		raw_frame_h = (image.get_height() // 4) if self._is_grid_sheet else image.get_height()
+
+		# Escala pra bater com diameter_px de altura (de UM frame), igual
+		# à lógica usada pros NPCs — tamanho final previsível.
+		target_scale = (self.diameter_px / raw_frame_h) if raw_frame_h else 1.0
+		combined = self.scale * target_scale
 		if combined != 1.0:
 			new_w = max(1, int(image.get_width()  * combined))
 			new_h = max(1, int(image.get_height() * combined))
 			image = pygame.transform.smoothscale(image, (new_w, new_h))
 
+		if self._is_grid_sheet:
+			self.frame_width  = image.get_width()  // 4
+			self.frame_height = image.get_height() // 4
+		else:
+			self.frame_width  = image.get_width()
+			self.frame_height = image.get_height()
+
 		return image
 
 	def _build_fallback_surface(self):
-		"""Bolinha azul proporcional ao MAP_SCALE, com brilho."""
-		size   = max(16, int(_FALLBACK_SIZE * self.scale))
+		"""Bolinha azul do tamanho de diameter_px, com brilho."""
+		size   = max(16, int(self.diameter_px * self.scale))
 		surf   = pygame.Surface((size, size), pygame.SRCALPHA)
 		center = (size // 2, size // 2)
 		radius = max(6, size // 2 - 2)
@@ -94,11 +127,7 @@ class Player(pygame.sprite.Sprite):
 		return frame
 
 	def _build_frames(self, sheet):
-		if self._fallback_sheet:
-			return {d: [sheet.copy()] for d in self.DIRECTIONS}
-		if sheet.get_width() < 4 or sheet.get_height() < 4:
-			return {d: [sheet.copy()] for d in self.DIRECTIONS}
-		if sheet.get_width() % 4 != 0 or sheet.get_height() % 4 != 0:
+		if self._fallback_sheet or not self._is_grid_sheet:
 			return {d: [sheet.copy()] for d in self.DIRECTIONS}
 
 		frame_map = {d: [] for d in self.DIRECTIONS}
@@ -119,6 +148,43 @@ class Player(pygame.sprite.Sprite):
 
 	def set_moving(self, moving):
 		self.moving = moving
+
+	def trigger_boost(self):
+		"""Ativa um boost curto de velocidade (dash). Não faz nada se ainda
+		estiver em cooldown. Retorna True se o boost foi ativado."""
+		if self._boost_cooldown_timer > 0:
+			return False
+		self._boost_timer = self.boost_duration
+		self._boost_cooldown_timer = self.boost_cooldown
+		return True
+
+	def update_boost(self, dt):
+		"""Atualiza os timers do boost e ajusta self.move_speed de acordo.
+		Chamar uma vez por frame, antes de usar move_speed."""
+		if self._boost_timer > 0:
+			self._boost_timer = max(0.0, self._boost_timer - dt)
+		if self._boost_cooldown_timer > 0:
+			self._boost_cooldown_timer = max(0.0, self._boost_cooldown_timer - dt)
+
+		self.move_speed = self.base_move_speed * (
+			self.boost_multiplier if self._boost_timer > 0 else 1.0
+		)
+
+	@property
+	def is_boosting(self):
+		return self._boost_timer > 0
+
+	@property
+	def boost_ready(self):
+		return self._boost_cooldown_timer <= 0
+
+	@property
+	def boost_cooldown_ratio(self):
+		"""0.0 = acabou de usar o boost, 1.0 = pronto pra usar de novo."""
+		if self.boost_cooldown <= 0:
+			return 1.0
+		ratio = 1.0 - (self._boost_cooldown_timer / self.boost_cooldown)
+		return max(0.0, min(1.0, ratio))
 
 	def move(self, dx, dy):
 		self.rect.x += dx
